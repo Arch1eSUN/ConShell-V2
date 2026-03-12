@@ -62,11 +62,17 @@ export type {
 } from './channels/index.js';
 
 // Plugin contract
+export {
+  PluginManager,
+  validateManifest,
+} from './plugins/index.js';
 export type {
   PluginManifest,
   PluginPermission,
   PluginHook,
   PluginState,
+  PluginInstance,
+  ValidationResult,
 } from './plugins/index.js';
 
 // Policy types (for plugins that need to interact with policy)

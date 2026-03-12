@@ -50,12 +50,23 @@ describe('Public API Surface Contract', () => {
     expect(typeof PublicAPI.CONSTITUTION_HASH).toBe('string');
   });
 
+  it('should export PluginManager class', () => {
+    expect(PublicAPI.PluginManager).toBeDefined();
+    expect(typeof PublicAPI.PluginManager).toBe('function');
+  });
+
+  it('should export validateManifest function', () => {
+    expect(PublicAPI.validateManifest).toBeDefined();
+    expect(typeof PublicAPI.validateManifest).toBe('function');
+  });
+
   // ── Exhaustive surface check ──────────────────────────────
   it('should export exactly the expected value symbols', () => {
     const exportedKeys = Object.keys(PublicAPI).sort();
     const expectedKeys = [
       'CONSTITUTION_HASH',
       'Kernel',
+      'PluginManager',
       'THREE_LAWS',
       'VERSION',
       'ZERO_CENTS',
@@ -63,6 +74,7 @@ describe('Public API Surface Contract', () => {
       'createLogger',
       'loadConfig',
       'toCents',
+      'validateManifest',
     ].sort();
 
     expect(exportedKeys).toEqual(expectedKeys);

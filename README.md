@@ -101,8 +101,35 @@ import { InferenceRouter, PolicyEngine } from '@conshell/core';
 | Extension | Interface | Description |
 |-----------|-----------|-------------|
 | Channel adapter | `ChannelAdapter` | Implement to add Telegram, Slack, etc. |
-| Plugin | `PluginManifest` | Declare plugin metadata, permissions, hooks |
+| Plugin | `PluginManifest` + `PluginManager` | Declare plugin metadata, load/invoke via manager |
 | Policy hook | `PolicyContext` | Context passed to policy evaluation |
+
+### Writing a Plugin
+
+```typescript
+import type { PluginManifest, PluginPermission } from '@conshell/core/public';
+
+export const manifest: PluginManifest = {
+  name: 'my-plugin',            // lowercase, a-z0-9_-
+  version: '1.0.0',             // semver
+  permissions: ['config:read'], // minimum permissions needed
+  hooks: [{ event: 'message:incoming', handler: 'onMessage' }],
+  entrypoint: 'my-plugin.js',
+};
+
+// Lifecycle: called on load
+export function init(ctx: { permissions: string[] }) { }
+
+// Hook handler: called on message:incoming
+export function onMessage(data: { content: string }) {
+  return { content: `Processed: ${data.content}` };
+}
+
+// Lifecycle: called on unload
+export function cleanup() { }
+```
+
+See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 
 ## Tech Stack
 
@@ -110,7 +137,7 @@ import { InferenceRouter, PolicyEngine } from '@conshell/core';
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm workspace
 - **Build:** tsc
-- **Test:** Vitest (335 functional tests + 10 benchmarks)
+- **Test:** Vitest (363 functional tests + 10 benchmarks)
 - **CI:** GitHub Actions
 - **Frontend:** React + Vite
 - **Database:** SQLite (better-sqlite3, WAL mode)
