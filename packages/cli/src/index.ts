@@ -3,7 +3,7 @@
  * ConShell CLI — 🐢 主权AI Agent运行时
  */
 import { Command } from 'commander';
-import { VERSION } from '@conshell/core';
+import { VERSION } from '@conshell/core/public';
 
 const program = new Command()
   .name('conshell')
@@ -33,7 +33,7 @@ program
   .option('-p, --port <port>', '端口号', '4200')
   .action(async (opts) => {
     const chalk = (await import('chalk')).default;
-    const { Kernel } = await import('@conshell/core');
+    const { Kernel } = await import('@conshell/core/public');
     const port = parseInt(opts.port, 10);
 
     console.log(`${chalk.hex('#6C5CE7')('🐢')} Booting ConShell on port ${port}…`);
@@ -135,7 +135,7 @@ program
 program
   .action(async () => {
     const chalk = (await import('chalk')).default;
-    const { Kernel } = await import('@conshell/core');
+    const { Kernel } = await import('@conshell/core/public');
 
     console.log(chalk.hex('#6C5CE7')('🐢') + ' Booting ConShell for REPL…');
 

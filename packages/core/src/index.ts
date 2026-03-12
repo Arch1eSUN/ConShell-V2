@@ -1,7 +1,13 @@
 /**
- * @conshell/core — ConShell V2 引擎核心
+ * @conshell/core — ConShell V2 引擎核心（全量导出）
  *
  * 🐢 Sovereign AI Agent Runtime
+ *
+ * ⚠️  外部消费者（CLI、dashboard、plugin、channel）应使用：
+ *       import { ... } from '@conshell/core/public'
+ *
+ *     本文件导出全部内部实现，仅供 core 内部模块和测试使用。
+ *     内部导出随时可能变更，不保证向后兼容。
  *
  * Modules:
  *   types/      — 共享类型、branded Cents

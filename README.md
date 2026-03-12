@@ -76,12 +76,33 @@ See [CONSTITUTION.md](./CONSTITUTION.md) for the full text.
 
 ## API Boundary
 
-The `@conshell/core` package exports are organized into **public** and **internal** categories:
+`@conshell/core` provides two import paths:
 
-- **@public** — Stable interfaces for CLI, dashboard, and external consumers
-- **@internal** — Implementation details that may change without notice
+```typescript
+// ✅ Stable public API — for CLI, plugins, channel adapters
+import { Kernel, VERSION, loadConfig } from '@conshell/core/public';
 
-CLI and dashboard should only depend on `@public` exports via `@conshell/core`.
+// ⚠️  Full internal exports — for core-internal use only
+import { InferenceRouter, PolicyEngine } from '@conshell/core';
+```
+
+### Public API (`@conshell/core/public`)
+
+| Category | Exports |
+|----------|---------|
+| **Runtime** | `Kernel`, `createKernel`, `VERSION` |
+| **Config** | `loadConfig`, `createLogger` |
+| **Types** | `AgentState`, `Message`, `Cents`, `ToolCallRequest`, `ToolResult` |
+| **Extension** | `ChannelAdapter`, `PluginManifest`, `PolicyContext` (types) |
+| **Constitution** | `THREE_LAWS`, `CONSTITUTION_HASH` |
+
+### Future Extension Points
+
+| Extension | Interface | Description |
+|-----------|-----------|-------------|
+| Channel adapter | `ChannelAdapter` | Implement to add Telegram, Slack, etc. |
+| Plugin | `PluginManifest` | Declare plugin metadata, permissions, hooks |
+| Policy hook | `PolicyContext` | Context passed to policy evaluation |
 
 ## Tech Stack
 

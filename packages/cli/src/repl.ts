@@ -9,7 +9,7 @@
  */
 import * as readline from 'node:readline';
 import chalk from 'chalk';
-import type { Kernel } from '@conshell/core';
+import type { Kernel } from '@conshell/core/public';
 
 // ── 内置命令 ─────────────────────────────────────────────────────────
 
