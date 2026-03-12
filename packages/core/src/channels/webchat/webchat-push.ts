@@ -1,0 +1,182 @@
+/**
+ * WebChat Push Bridge — ChannelManager outbound → WebSocket push
+ *
+ * 职责：
+ *   1. 维护 sessionId → Set<clientId> 映射
+ *   2. 处理 subscribe/unsubscribe/ping 消息
+ *   3. 监听 ChannelManager 的 message:outbound 事件
+ *   4. 按 sessionId 推送到对应 WebSocket 连接
+ *
+ * 不做：
+ *   - 不做 auth
+ *   - 不做 persistent session
+ *   - 不复制 transport 逻辑
+ */
+import type { WebSocketServer } from '../../server/websocket.js';
+import type { ChannelManager, OutboundMessage } from '../index.js';
+
+// ── Types ─────────────────────────────────────────────────
+
+export interface PushBridgeOptions {
+  /** Enable status (processing) push before message */
+  enableStatusPush?: boolean;
+}
+
+// ── Push Bridge ───────────────────────────────────────────
+
+export class WebChatPushBridge {
+  private wsServer: WebSocketServer;
+  private channelManager: ChannelManager;
+  private opts: Required<PushBridgeOptions>;
+
+  /** sessionId → Set of clientIds */
+  private sessions = new Map<string, Set<string>>();
+  /** clientId → sessionId (reverse index for disconnect cleanup) */
+  private clientToSession = new Map<string, string>();
+  /** outbound event handler reference (for cleanup) */
+  private outboundHandler: ((msg: OutboundMessage) => void) | null = null;
+
+  private started = false;
+
+  constructor(
+    wsServer: WebSocketServer,
+    channelManager: ChannelManager,
+    opts?: PushBridgeOptions,
+  ) {
+    this.wsServer = wsServer;
+    this.channelManager = channelManager;
+    this.opts = {
+      enableStatusPush: opts?.enableStatusPush ?? true,
+    };
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────
+
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+
+    // Handle subscribe messages
+    this.wsServer.onMessage('subscribe', (client, data) => {
+      const sessionId = (data as any)?.sessionId;
+      if (!sessionId || typeof sessionId !== 'string') {
+        this.wsServer.send(client.id, 'error', { error: 'sessionId required' });
+        return;
+      }
+
+      // Register session → client binding
+      if (!this.sessions.has(sessionId)) {
+        this.sessions.set(sessionId, new Set());
+      }
+      this.sessions.get(sessionId)!.add(client.id);
+      this.clientToSession.set(client.id, sessionId);
+
+      this.wsServer.send(client.id, 'subscribed', { sessionId });
+    });
+
+    // Handle unsubscribe
+    this.wsServer.onMessage('unsubscribe', (client, data) => {
+      const sessionId = (data as any)?.sessionId;
+      if (sessionId) {
+        this.removeClient(client.id, sessionId);
+      }
+      this.wsServer.send(client.id, 'unsubscribed', { sessionId });
+    });
+
+    // Handle ping
+    this.wsServer.onMessage('ping', (client) => {
+      this.wsServer.send(client.id, 'pong', null);
+    });
+
+    // Disconnect cleanup
+    this.wsServer.onDisconnect((clientId) => {
+      const sessionId = this.clientToSession.get(clientId);
+      if (sessionId) {
+        this.removeClient(clientId, sessionId);
+      }
+    });
+
+    // Bridge outbound messages to WebSocket push
+    this.outboundHandler = (msg: OutboundMessage) => {
+      if (msg.platform !== 'webchat') return;
+
+      const sessionId = msg.to;
+      if (!sessionId) return;
+
+      this.pushToSession(sessionId, {
+        type: 'message',
+        data: {
+          sessionId,
+          platform: 'webchat',
+          content: msg.content,
+          replyTo: msg.replyTo,
+        },
+      });
+    };
+
+    this.channelManager.on('message:outbound', this.outboundHandler);
+  }
+
+  stop(): void {
+    if (!this.started) return;
+    this.started = false;
+
+    if (this.outboundHandler) {
+      this.channelManager.off('message:outbound', this.outboundHandler);
+      this.outboundHandler = null;
+    }
+
+    this.sessions.clear();
+    this.clientToSession.clear();
+  }
+
+  // ── Status Push ──────────────────────────────────────────
+
+  /**
+   * Push a status event to a session (e.g., "processing").
+   * Called externally by Gateway/runtime when processing begins.
+   */
+  pushStatus(sessionId: string, status: string): void {
+    if (!this.opts.enableStatusPush) return;
+
+    this.pushToSession(sessionId, {
+      type: 'status',
+      data: { sessionId, status },
+    });
+  }
+
+  // ── Internal ─────────────────────────────────────────────
+
+  private pushToSession(sessionId: string, payload: { type: string; data: unknown }): void {
+    const clients = this.sessions.get(sessionId);
+    if (!clients || clients.size === 0) return;
+
+    for (const clientId of clients) {
+      this.wsServer.send(clientId, payload.type, payload.data);
+    }
+  }
+
+  private removeClient(clientId: string, sessionId: string): void {
+    const clients = this.sessions.get(sessionId);
+    if (clients) {
+      clients.delete(clientId);
+      if (clients.size === 0) {
+        this.sessions.delete(sessionId);
+      }
+    }
+    this.clientToSession.delete(clientId);
+  }
+
+  // ── Query ────────────────────────────────────────────────
+
+  /** Get active session count */
+  get sessionCount(): number {
+    return this.sessions.size;
+  }
+
+  /** Get all client IDs for a session */
+  getSessionClients(sessionId: string): string[] {
+    const clients = this.sessions.get(sessionId);
+    return clients ? Array.from(clients) : [];
+  }
+}

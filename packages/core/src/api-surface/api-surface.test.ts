@@ -60,21 +60,51 @@ describe('Public API Surface Contract', () => {
     expect(typeof PublicAPI.validateManifest).toBe('function');
   });
 
+  it('should export WebChatAdapter class', () => {
+    expect(PublicAPI.WebChatAdapter).toBeDefined();
+    expect(typeof PublicAPI.WebChatAdapter).toBe('function');
+  });
+
+  it('should export ChannelManager class', () => {
+    expect(PublicAPI.ChannelManager).toBeDefined();
+    expect(typeof PublicAPI.ChannelManager).toBe('function');
+  });
+
+  it('should export WebChatTransport class', () => {
+    expect(PublicAPI.WebChatTransport).toBeDefined();
+    expect(typeof PublicAPI.WebChatTransport).toBe('function');
+  });
+
+  it('should export validateRequest function', () => {
+    expect(PublicAPI.validateRequest).toBeDefined();
+    expect(typeof PublicAPI.validateRequest).toBe('function');
+  });
+
+  it('should export WebChatPushBridge class', () => {
+    expect(PublicAPI.WebChatPushBridge).toBeDefined();
+    expect(typeof PublicAPI.WebChatPushBridge).toBe('function');
+  });
+
   // ── Exhaustive surface check ──────────────────────────────
   it('should export exactly the expected value symbols', () => {
     const exportedKeys = Object.keys(PublicAPI).sort();
     const expectedKeys = [
       'CONSTITUTION_HASH',
+      'ChannelManager',
       'Kernel',
       'PluginManager',
       'THREE_LAWS',
       'VERSION',
+      'WebChatAdapter',
+      'WebChatPushBridge',
+      'WebChatTransport',
       'ZERO_CENTS',
       'createKernel',
       'createLogger',
       'loadConfig',
       'toCents',
       'validateManifest',
+      'validateRequest',
     ].sort();
 
     expect(exportedKeys).toEqual(expectedKeys);

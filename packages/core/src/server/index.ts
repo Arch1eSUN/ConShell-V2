@@ -14,6 +14,7 @@ export { registerAgentRoutes } from './routes/agent.js';
 export { registerMetricsRoutes } from './routes/metrics.js';
 export { registerSkillsRoutes } from './routes/skills.js';
 export { registerMemoryRoutes } from './routes/memory.js';
+export { registerWebChatRoutes } from './routes/webchat.js';
 
 // Middleware
 export { createAuthMiddleware } from './middleware/auth.js';

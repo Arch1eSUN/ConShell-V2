@@ -52,6 +52,10 @@ export { toCents, ZERO_CENTS } from './types/index.js';
 // ═══════════════════════════════════════════════════════════════════════
 
 // Channel adapter contract
+export {
+  WebChatAdapter,
+  ChannelManager,
+} from './channels/index.js';
 export type {
   ChannelAdapter,
   ChannelConfig,
@@ -60,6 +64,13 @@ export type {
   ChannelState,
   OutboundMessage,
 } from './channels/index.js';
+
+// WebChat transport (first real channel implementation)
+export { WebChatTransport, validateRequest } from './channels/webchat/webchat-transport.js';
+export type { WebChatRequest, WebChatResponse } from './channels/webchat/webchat-transport.js';
+
+// WebChat push bridge (WebSocket session-aware push)
+export { WebChatPushBridge } from './channels/webchat/webchat-push.js';
 
 // Plugin contract
 export {

@@ -29,6 +29,7 @@ export class WebSocketServer {
   private logger: Logger;
   private clients = new Map<string, WSClient>();
   private handlers = new Map<string, (client: WSClient, data: unknown) => void>();
+  private disconnectHandlers: Array<(clientId: string) => void> = [];
   private _messageCount = 0;
 
   constructor(logger: Logger) {
@@ -49,6 +50,16 @@ export class WebSocketServer {
   /** 注册消息处理器 */
   onMessage(type: string, handler: (client: WSClient, data: unknown) => void): void {
     this.handlers.set(type, handler);
+  }
+
+  /** 注册断连回调 */
+  onDisconnect(handler: (clientId: string) => void): void {
+    this.disconnectHandlers.push(handler);
+  }
+
+  /** 获取指定客户端 */
+  getClient(clientId: string): WSClient | undefined {
+    return this.clients.get(clientId);
   }
 
   /** 广播消息给所有客户端 */
@@ -143,10 +154,12 @@ export class WebSocketServer {
     socket.on('close', () => {
       this.clients.delete(clientId);
       this.logger.debug('WebSocket disconnected', { clientId });
+      for (const h of this.disconnectHandlers) { try { h(clientId); } catch {} }
     });
 
     socket.on('error', () => {
       this.clients.delete(clientId);
+      for (const h of this.disconnectHandlers) { try { h(clientId); } catch {} }
     });
   }
 

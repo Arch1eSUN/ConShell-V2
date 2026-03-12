@@ -100,9 +100,79 @@ import { InferenceRouter, PolicyEngine } from '@conshell/core';
 
 | Extension | Interface | Description |
 |-----------|-----------|-------------|
-| Channel adapter | `ChannelAdapter` | Implement to add Telegram, Slack, etc. |
+| Channel adapter | `ChannelAdapter` + `ChannelManager` | Implement to add Telegram, Slack, etc. |
+| WebChat channel | `WebChatTransport` | Built-in HTTP-based chat channel (first real impl) |
 | Plugin | `PluginManifest` + `PluginManager` | Declare plugin metadata, load/invoke via manager |
 | Policy hook | `PolicyContext` | Context passed to policy evaluation |
+
+### Using WebChat Channel
+
+```typescript
+import { ChannelManager, WebChatTransport } from '@conshell/core/public';
+
+const manager = new ChannelManager();
+manager.configure({ platform: 'webchat', enabled: true });
+await manager.connect('webchat');
+
+const transport = new WebChatTransport(manager);
+const response = await transport.handleMessage({
+  sessionId: 'user-session-001',
+  message: 'Hello ConShell',
+});
+// response: { reply: '...', sessionId: 'user-session-001', platform: 'webchat' }
+```
+
+**HTTP API** — `POST /api/webchat/message`:
+
+```json
+// Request
+{ "sessionId": "user-001", "message": "Hello", "metadata": {} }
+
+// Success (200)
+{ "reply": "...", "sessionId": "user-001", "platform": "webchat", "messageId": "web_out_...", "timestamp": 1234567890 }
+
+// Error (400 / 503 / 504 / 500)
+{ "error": "description", "code": "INVALID_REQUEST | SERVICE_UNAVAILABLE | GATEWAY_TIMEOUT | INTERNAL_ERROR" }
+```
+
+| Status | When |
+|--------|------|
+| 400 | Missing/invalid fields, non-JSON body |
+| 503 | WebChat transport or adapter not available |
+| 504 | Response timeout |
+| 500 | Unexpected error |
+
+The route delegates to `WebChatTransport` → `WebChatAdapter` → `ChannelManager` → `Gateway`.
+
+**WebSocket Push** — real-time outbound messages:
+
+Connect via WebSocket upgrade on the same port, then subscribe to a session:
+
+```json
+// Client → Server: subscribe
+{ "type": "subscribe", "data": { "sessionId": "user-001" } }
+
+// Server → Client: confirmation
+{ "type": "subscribed", "data": { "sessionId": "user-001" }, "timestamp": "..." }
+
+// Server → Client: status (optional, when processing begins)
+{ "type": "status", "data": { "sessionId": "user-001", "status": "processing" }, "timestamp": "..." }
+
+// Server → Client: outbound message push
+{ "type": "message", "data": { "sessionId": "user-001", "platform": "webchat", "content": "..." }, "timestamp": "..." }
+```
+
+| Protocol | Direction | Purpose |
+|----------|-----------|---------|
+| `subscribe` | Client → Server | Bind WS connection to sessionId |
+| `unsubscribe` | Client → Server | Remove binding |
+| `ping` / `pong` | Both | Keep-alive |
+| `message` | Server → Client | Outbound push |
+| `status` | Server → Client | Processing state |
+
+Current limitations: no auth, no persistent sessions, no token-level streaming.
+
+See `packages/core/src/channels/webchat/` and `packages/core/src/server/routes/webchat.ts`.
 
 ### Writing a Plugin
 
@@ -137,7 +207,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm workspace
 - **Build:** tsc
-- **Test:** Vitest (363 functional tests + 10 benchmarks)
+- **Test:** Vitest (388+ functional tests + 10 benchmarks)
 - **CI:** GitHub Actions
 - **Frontend:** React + Vite
 - **Database:** SQLite (better-sqlite3, WAL mode)

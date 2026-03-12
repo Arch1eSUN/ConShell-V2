@@ -104,3 +104,211 @@ describe('HttpServer', () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// WebChat HTTP Route Integration Tests
+// ═══════════════════════════════════════════════════════════════════════
+
+import { HttpServer } from './http.js';
+import { registerWebChatRoutes } from './routes/webchat.js';
+import { WebChatTransport } from '../channels/webchat/webchat-transport.js';
+import { Gateway } from '../channels/gateway.js';
+import type { Logger } from '../types/common.js';
+import { afterEach, beforeEach } from 'vitest';
+
+const silentLogger: Logger = {
+  debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+  child: function() { return this; },
+};
+
+describe('WebChat HTTP Route — POST /api/webchat/message', () => {
+  let server: HttpServer;
+  let port: number;
+
+  // Use a random high port to avoid conflicts
+  beforeEach(() => {
+    port = 40000 + Math.floor(Math.random() * 10000);
+  });
+
+  afterEach(async () => {
+    if (server) await server.stop();
+  });
+
+  // Helper to POST to the webchat endpoint
+  async function postWebChat(body: unknown): Promise<{ status: number; json: any }> {
+    const res = await fetch(`http://127.0.0.1:${port}/api/webchat/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+    const json = await res.json();
+    return { status: res.status, json };
+  }
+
+  // ── 1. Success: full HTTP → transport → Gateway → response ──
+
+  it('should return 200 with echo reply on valid request', async () => {
+    // Set up Gateway with echo handler
+    const gateway = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+    });
+    gateway.route({ handler: async (msg) => `Echo: ${msg.content}` });
+    await gateway.start();
+
+    const transport = new WebChatTransport(gateway.getManager(), { timeoutMs: 5000 });
+
+    server = new HttpServer(silentLogger, { port });
+    registerWebChatRoutes(server, transport, silentLogger);
+    await server.start();
+
+    const { status, json } = await postWebChat({
+      sessionId: 'http-session-1',
+      message: 'Hello from HTTP',
+    });
+
+    expect(status).toBe(200);
+    expect(json.reply).toBe('Echo: Hello from HTTP');
+    expect(json.sessionId).toBe('http-session-1');
+    expect(json.platform).toBe('webchat');
+    expect(json.messageId).toMatch(/^web_out_/);
+    expect(json.timestamp).toBeGreaterThan(0);
+
+    await gateway.stop();
+  });
+
+  // ── 2. 400: missing sessionId ──
+
+  it('should return 400 when sessionId is missing', async () => {
+    const gateway = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+    });
+    await gateway.start();
+    const transport = new WebChatTransport(gateway.getManager());
+
+    server = new HttpServer(silentLogger, { port });
+    registerWebChatRoutes(server, transport, silentLogger);
+    await server.start();
+
+    const { status, json } = await postWebChat({ message: 'hello' });
+    expect(status).toBe(400);
+    expect(json.code).toBe('INVALID_REQUEST');
+    expect(json.error).toContain('sessionId');
+
+    await gateway.stop();
+  });
+
+  // ── 3. 400: missing message ──
+
+  it('should return 400 when message is missing', async () => {
+    const gateway = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+    });
+    await gateway.start();
+    const transport = new WebChatTransport(gateway.getManager());
+
+    server = new HttpServer(silentLogger, { port });
+    registerWebChatRoutes(server, transport, silentLogger);
+    await server.start();
+
+    const { status, json } = await postWebChat({ sessionId: 'abc' });
+    expect(status).toBe(400);
+    expect(json.code).toBe('INVALID_REQUEST');
+    expect(json.error).toContain('message');
+
+    await gateway.stop();
+  });
+
+  // ── 4. 400: non-JSON body ──
+
+  it('should return 400 when body is not valid JSON', async () => {
+    server = new HttpServer(silentLogger, { port });
+    registerWebChatRoutes(server, null, silentLogger);
+    await server.start();
+
+    // This will hit the JSON.parse catch before the transport null check
+    // Actually, transport null is checked first in our route. Let's use a real transport.
+    const gateway = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+    });
+    await gateway.start();
+    const transport = new WebChatTransport(gateway.getManager());
+
+    // Recreate server with real transport
+    await server.stop();
+    server = new HttpServer(silentLogger, { port });
+    registerWebChatRoutes(server, transport, silentLogger);
+    await server.start();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/webchat/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not json at all',
+    });
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('INVALID_REQUEST');
+    expect(json.error).toContain('JSON');
+
+    await gateway.stop();
+  });
+
+  // ── 5. 503: transport = null ──
+
+  it('should return 503 when transport is null', async () => {
+    server = new HttpServer(silentLogger, { port });
+    registerWebChatRoutes(server, null, silentLogger);
+    await server.start();
+
+    const { status, json } = await postWebChat({
+      sessionId: 'abc',
+      message: 'hello',
+    });
+    expect(status).toBe(503);
+    expect(json.code).toBe('SERVICE_UNAVAILABLE');
+  });
+
+  // ── 6. 503: adapter not connected ──
+
+  it('should return 503 when adapter is not connected', async () => {
+    // Create manager but don't connect
+    const { ChannelManager } = await import('../channels/index.js');
+    const manager = new ChannelManager();
+    // webchat adapter is auto-registered but NOT connected
+    const transport = new WebChatTransport(manager);
+
+    server = new HttpServer(silentLogger, { port });
+    registerWebChatRoutes(server, transport, silentLogger);
+    await server.start();
+
+    const { status, json } = await postWebChat({
+      sessionId: 'abc',
+      message: 'hello',
+    });
+    expect(status).toBe(503);
+    expect(json.code).toBe('SERVICE_UNAVAILABLE');
+  });
+
+  // ── 7. 504: timeout ──
+
+  it('should return 504 when transport times out', async () => {
+    // Gateway with no handlers → no reply → timeout
+    const gateway = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+    });
+    await gateway.start();
+    const transport = new WebChatTransport(gateway.getManager(), { timeoutMs: 200 });
+
+    server = new HttpServer(silentLogger, { port });
+    registerWebChatRoutes(server, transport, silentLogger);
+    await server.start();
+
+    const { status, json } = await postWebChat({
+      sessionId: 'timeout-session',
+      message: 'will timeout',
+    });
+    expect(status).toBe(504);
+    expect(json.code).toBe('GATEWAY_TIMEOUT');
+
+    await gateway.stop();
+  });
+});

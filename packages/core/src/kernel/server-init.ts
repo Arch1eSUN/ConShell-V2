@@ -11,6 +11,7 @@ import type { AgentLoop } from '../runtime/agent-loop.js';
 import type { ToolExecutor } from '../runtime/tool-executor.js';
 import type { SkillRegistry } from '../skills/registry.js';
 import type { MemoryTierManager } from '../memory/tier-manager.js';
+import type { WebChatTransport } from '../channels/webchat/webchat-transport.js';
 import { HttpServer } from '../server/http.js';
 import { WebSocketServer } from '../server/websocket.js';
 
@@ -25,6 +26,8 @@ export interface ServerInitDeps {
   toolExecutor: ToolExecutor;
   skills: SkillRegistry;
   memory: MemoryTierManager;
+  /** Optional: WebChat transport for /api/webchat/message */
+  webChatTransport?: WebChatTransport;
 }
 
 export interface ServerInstances {
@@ -55,6 +58,7 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   const { registerMetricsRoutes } = await import('../server/routes/metrics.js');
   const { registerSkillsRoutes } = await import('../server/routes/skills.js');
   const { registerMemoryRoutes } = await import('../server/routes/memory.js');
+  const { registerWebChatRoutes } = await import('../server/routes/webchat.js');
   const { registerProxyRoutes } = await import('../server/proxy.js');
 
   // Create servers
@@ -68,7 +72,7 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   httpServer.use(createAuthMiddleware({
     mode: authMode as 'none' | 'token' | 'basic',
     tokens: authTokens,
-    publicPaths: ['/v1/', '/api/agent/status'],
+    publicPaths: ['/v1/', '/api/agent/status', '/api/webchat/'],
   }, logger));
   httpServer.use(createRateLimitMiddleware({ maxRequests: 120 }, logger));
 
@@ -79,6 +83,7 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   registerMetricsRoutes(httpServer, inference, toolExecutor, logger);
   registerSkillsRoutes(httpServer, skills, logger);
   registerMemoryRoutes(httpServer, memory, logger);
+  registerWebChatRoutes(httpServer, deps.webChatTransport ?? null, logger);
   registerProxyRoutes(httpServer, inference, logger);
 
   // ── Start ─────────────────────────────────────────────────────────
@@ -87,6 +92,14 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   // Attach WebSocket to HTTP server upgrade
   const raw = httpServer.rawServer;
   if (raw) wsServer.attachToServer(raw);
+
+  // ── WebChat Push Bridge ──────────────────────────────────────────
+  if (deps.webChatTransport) {
+    const { WebChatPushBridge } = await import('../channels/webchat/webchat-push.js');
+    const pushBridge = new WebChatPushBridge(wsServer, (deps.webChatTransport as any).channelManager ?? null);
+    pushBridge.start();
+    logger.info('WebChat push bridge started');
+  }
 
   logger.info('Server listening', { port });
 
