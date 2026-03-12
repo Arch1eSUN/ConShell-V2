@@ -2,11 +2,11 @@
  * F6 Test Suite — ToolRegistry + PolicyEngine + InferenceRouter + API Routes
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ToolRegistry, createBuiltinTools } from '../src/tools/registry.js';
-import { PolicyEngine } from '../src/policy/index.js';
-import { InferenceRouter } from '../src/inference/index.js';
-import { createApiRoutes } from '../src/api/routes.js';
-import type { Logger } from '../src/types/common.js';
+import { ToolRegistry, createBuiltinTools } from '../tools/registry.js';
+import { PolicyEngine } from '../policy/index.js';
+import { InferenceRouter } from '../inference/index.js';
+import { createApiRoutes } from '../api/routes.js';
+import type { Logger } from '../types/common.js';
 
 // ── Test Logger ──────────────────────────────────────────────────────
 

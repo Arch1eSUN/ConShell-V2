@@ -22,6 +22,10 @@
 
 export const VERSION = '0.1.0';
 
+// ═══════════════════════════════════════════════════════════════════════
+// @public — Stable interfaces for CLI, dashboard, and external consumers
+// ═══════════════════════════════════════════════════════════════════════
+
 // ── Types ──────────────────────────────────────────────────────────────
 export type {
   AgentState,
@@ -165,6 +169,11 @@ export {
   generateNonce,
 } from './wallet/index.js';
 export type { WalletAccount, TypedDataParams, EncryptedWallet, SiweMessage } from './wallet/index.js';
+
+// ═══════════════════════════════════════════════════════════════════════
+// @internal — Implementation details, may change without notice.
+//             CLI and dashboard should not depend on these directly.
+// ═══════════════════════════════════════════════════════════════════════
 
 // ── Wallet Connector ──────────────────────────────────────────────────
 export {

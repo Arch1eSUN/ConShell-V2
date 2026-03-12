@@ -1,5 +1,7 @@
 # 🐢 ConShell V2
 
+[![CI](https://github.com/Arch1eSUN/ConShell-V2/actions/workflows/ci.yml/badge.svg)](https://github.com/Arch1eSUN/ConShell-V2/actions/workflows/ci.yml)
+
 **Sovereign AI Agent Runtime** — Conway Automaton + OpenClaw fusion
 
 A self-sovereign AI agent runtime that earns its own existence, manages its own finances, and operates under a binding constitution. Built on the Web 4.0 manifesto and x402 payment protocol.
@@ -24,7 +26,7 @@ packages/
 | **policy** | 24-rule policy engine across 6 categories |
 | **inference** | Multi-provider LLM router with SurvivalTier-aware failover |
 | **wallet** | ERC-8004 on-chain identity + x402 micropayments |
-| **channels** | Multi-channel messaging (Telegram, WhatsApp, Matrix, Slack) |
+| **channels** | Multi-channel messaging (Telegram, others planned) |
 | **plugins** | Sandboxed plugin system with VM isolation |
 | **memory** | Tiered memory with hot/warm/cold storage |
 | **soul** | Agent identity and personality management |
@@ -52,6 +54,9 @@ pnpm build
 # Run tests
 pnpm test
 
+# Run benchmarks (separate, non-blocking)
+pnpm --filter @conshell/core test:bench
+
 # Start CLI
 pnpm --filter @conshell/cli dev
 
@@ -69,13 +74,23 @@ ConShell V2 operates under three immutable laws:
 
 See [CONSTITUTION.md](./CONSTITUTION.md) for the full text.
 
+## API Boundary
+
+The `@conshell/core` package exports are organized into **public** and **internal** categories:
+
+- **@public** — Stable interfaces for CLI, dashboard, and external consumers
+- **@internal** — Implementation details that may change without notice
+
+CLI and dashboard should only depend on `@public` exports via `@conshell/core`.
+
 ## Tech Stack
 
 - **Language:** TypeScript (strict mode, ES2022)
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm workspace
 - **Build:** tsc
-- **Test:** Vitest (345 tests, 25 test files)
+- **Test:** Vitest (335 functional tests + 10 benchmarks)
+- **CI:** GitHub Actions
 - **Frontend:** React + Vite
 - **Database:** SQLite (better-sqlite3, WAL mode)
 - **Blockchain:** Base L2 (ERC-8004)
@@ -87,8 +102,10 @@ See [CONSTITUTION.md](./CONSTITUTION.md) for the full text.
 | Core build | ✅ Passing |
 | CLI build | ✅ Passing |
 | Dashboard build | ✅ Passing (tsc + vite) |
-| Test suite | ✅ 345/345 passing |
-| Channels | 🔧 Telegram functional, others are stubs |
+| Functional tests | ✅ 335 passing (25 files) |
+| Benchmarks | ✅ 10 tests (separate `test:bench`) |
+| CI | ✅ GitHub Actions |
+| Channels | 🔧 Telegram functional, others planned |
 | Wallet | 🔧 ERC-8004 types + local tracking |
 | Multi-agent | 🔧 Facilitator pattern implemented |
 
@@ -100,6 +117,9 @@ pnpm --filter @conshell/core build
 
 # Test single package
 pnpm --filter @conshell/core test
+
+# Run benchmarks
+pnpm --filter @conshell/core test:bench
 
 # Clean all dist/
 pnpm clean
