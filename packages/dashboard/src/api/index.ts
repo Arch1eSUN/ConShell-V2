@@ -1,7 +1,11 @@
 /**
  * API barrel — 导出api client + WebSocket hook
  */
-export { api, type HealthResponse, type ChatResponse, type MetricsResponse, type ConfigResponse } from './client';
+export {
+  api,
+  type HealthResponse, type ChatResponse, type MetricsResponse, type ConfigResponse,
+  type SessionItem, type TurnItem, type SessionListResponse, type TranscriptResponse,
+} from './client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
