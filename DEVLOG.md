@@ -296,14 +296,14 @@ emitError(event: StreamErrorEvent): void;
 
 | 分类 | 导出 |
 |------|------|
-| **Runtime** | `Kernel`, `createKernel`, `VERSION`, `BootStage`, `BootResult`, `KernelServices` |
+| **Runtime** | `Kernel`, `createKernel`, `VERSION`, `BootStage`, `BootStageResult`, `BootResult`, `KernelServices` |
 | **Config** | `loadConfig`, `createLogger`, `AppConfig`, `InferenceMode`, `InterfaceMode` |
 | **Core Types** | `AgentState`, `SecurityLevel`, `Cents`, `toCents`, `ZERO_CENTS`, `Message`, `ToolCallRequest`, `ToolResult` |
-| **Channels** | `ChannelManager`, `WebChatAdapter`, `WebChatTransport`, `WebChatPushBridge`, `validateRequest` |
+| **Channels** | `ChannelManager`, `WebChatAdapter`, `WebChatTransport`, `WebChatPushBridge`, `validateRequest`, `WebChatRequest`, `WebChatResponse` |
 | **Channel Types** | `ChannelAdapter`, `ChannelConfig`, `ChannelMessage`, `ChannelPlatform`, `ChannelState`, `OutboundMessage`, `StreamChunk`, `StatusEvent`, `StreamStatus`, `StreamErrorEvent`, `StreamErrorCode` |
-| **Plugins** | `PluginManager`, `validateManifest`, `PluginManifest`, `PluginPermission`, `PluginHook`, `PluginState` |
+| **Plugins** | `PluginManager`, `validateManifest`, `PluginManifest`, `PluginPermission`, `PluginHook`, `PluginState`, `PluginInstance`, `ValidationResult` |
 | **Policy** | `PolicyContext`, `PolicyResult` |
-| **Constitution** | `THREE_LAWS`, `CONSTITUTION_HASH`, `ConstitutionLaw` |
+| **Constitution** | `THREE_LAWS`, `CONSTITUTION_HASH` (values), `ConstitutionLaw` (type) |
 
 ---
 
