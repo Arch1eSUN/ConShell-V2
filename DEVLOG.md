@@ -15,7 +15,7 @@
 
 - **语言**: TypeScript（strict mode）
 - **包管理**: pnpm monorepo
-- **测试**: vitest（33 个测试文件，490 个测试用例）
+- **测试**: vitest（34 个测试文件（含 benchmark），490 个测试用例）
 - **构建**: tsc
 - **CI**: GitHub Actions
 
@@ -325,7 +325,7 @@ core/src/
 │   └── demo/       # 演示插件
 ├── memory/         # 分层内存（hot/warm/cold）
 ├── soul/           # Agent 身份 + 人格管理
-├── tools/          # 50+ 内建工具（13 类）
+├── tools/          # 9 内建工具（5 类: shell, filesystem, web, http, memory）
 ├── mcp/            # Model Context Protocol 网关
 ├── multiagent/     # 多 Agent 协调
 ├── selfmod/        # 自我修改 + 审计追踪
@@ -362,13 +362,14 @@ core/src/
 | 测试文件 | 测试数 | 关注领域 |
 |----------|--------|----------|
 | `channels.test.ts` | 42 | 适配器、ChannelManager、Gateway、Streaming 协议 |
+| `f4-f6.test.ts` | 32 | 集成测试 |
 | `webchat-e2e.test.ts` | 26 | WebChat HTTP 全栈 E2E |
 | `automaton.test.ts` | 25 | Conway Automaton 核心 |
 | `constitution.test.ts` | 20 | 三大法则合规 |
 | `policy.test.ts` | 20 | 策略引擎 |
 | `sandbox.test.ts` | 20 | 插件 VM 沙盒 |
 | `server.test.ts` | 18 | HTTP + WS 服务器 |
-| `spend.test.ts` | 17 | 预算管理 |
+| `spend.test.ts` (spend/) | 17 | 预算管理 |
 | `webchat-push.test.ts` | 17 | WS 推送 + chunk streaming |
 | `plugin-e2e.test.ts` | 17 | 插件闭环 E2E |
 | `inference.test.ts` | 17 | LLM 推理路由 + chatStreaming failover |
@@ -376,20 +377,25 @@ core/src/
 | `identity.test.ts` | 16 | 身份管理 |
 | `multiagent.test.ts` | 16 | 多 Agent 协调 |
 | `api-surface.test.ts` | 15 | Public API 稳定性 |
+| `conversation-service.test.ts` | 14 | 会话服务（Round 10） |
+| `sessions.test.ts` | 13 | Session 持久化（Round 10） |
 | `plugins.test.ts` | 12 | 插件管理 |
 | `evomap.test.ts` | 11 | 演化映射 |
 | `mcp/gateway.test.ts` | 11 | MCP 网关 |
+| `memory.test.ts` (tools/) | 11 | 记忆工具（Round 11） |
 | `config.test.ts` | 10 | 配置加载 |
 | `selfmod.test.ts` | 10 | 自我修改 |
+| `builtin.test.ts` | 10 | 内建工具集成（Round 11） |
 | `wallet.test.ts` | 9 | 钱包 |
 | `erc8004.test.ts` | 9 | ERC-8004 |
+| `spend.test.ts` (repos/) | 8 | Spend 持久化（Round 11） |
 | `logger.test.ts` | 8 | 日志 |
 | `facilitator.test.ts` | 7 | 便利工具 |
 | `kernel.test.ts` | 5 | 内核启动 |
 | `compute.test.ts` | 4 | 算力管理 |
 | `git.test.ts` | 4 | Git 操作 |
-| `f4-f6.test.ts` | 32 | 集成测试 |
-| **合计** | **434** | |
+| `perf.test.ts` | — | Benchmark（独立运行） |
+| **合计** | **490** | **34 文件（含 benchmark）** |
 
 ---
 
@@ -445,23 +451,23 @@ Client             Server
 
 ## 8. 推荐的下一步开发方向
 
-> 以下是基于当前进度的建议，按优先级排序。
+> 以下是基于当前进度（Round 11 完成后）的建议，按优先级排序。
 
 ### 高优先级
 
-1. **Session 持久化** — 当前 session 仅在内存中。接入 `state/repos` 实现 SQLite 持久化。
-2. **AgentLoop 集成** — 将 WebChat 请求接入真实 Agent 循环（而非简单 route handler）。
-3. **Dashboard WebSocket 集成** — 让 React Dashboard 通过 WS 协议实时显示 Agent 对话。
+1. ~~**Session 持久化**~~ ✅ 已在 Round 10 完成（SessionsRepository + ConversationService）
+2. **AgentLoop 集成** — 将 WebChat 请求接入真实 Agent 循环（ReAct Think→Act→Observe→Persist），而非简单 route handler。
+3. **Dashboard 真实数据集成** — 让 Dashboard 各页面使用 real backend data 而非 mock。
 
 ### 中优先级
 
-4. **Telegram Channel Adapter** — 第二个 channel，验证多通道架构的通用性。
-5. **Plugin 事件钩子** — 让插件能监听 channel 事件（`message:inbound` / `message:chunk`）。
-6. **HTTP SSE 旁路** — 为不支持 WS 的客户端提供 Server-Sent Events fallback。
+4. **第二个 Channel Adapter** — 验证多通道架构的通用性（如 Telegram）。
+5. **Auth 中间件** — 为 HTTP + WebSocket 增加认证层（当前无 auth）。
+6. **Plugin 事件钩子** — 让插件能监听 channel 事件（`message:inbound` / `message:chunk`）。
 
 ### 低优先级
 
-7. **Auth 中间件** — 为 WebSocket 连接增加认证层。
+7. **HTTP SSE 旁路** — 为不支持 WS 的客户端提供 Server-Sent Events fallback。
 8. **Rate Limiting per-session** — 按 session 级别限流（当前是全局）。
 9. **Client-side streaming SDK** — JS/TS SDK 封装 WS chunk 协议。
 
@@ -499,15 +505,23 @@ pnpm --filter @conshell/dashboard dev
 ## 10. Git 提交历史
 
 ```
-4e4feb9 feat: webchat HTTP route + WebSocket push bridge
-76643a4 feat: minimal plugin extension loop — first verified expansion
-789d991 feat: public API layer — stable interface boundary via exports map
-89bbf2d feat: expansion readiness — API boundary, CI, test unification
-52de314 chore: engineering cleanup — git hygiene + benchmark separation
 875e324 feat: initial commit — engineering baseline restored
-6566c0e docs: reconcile README + DEVLOG to match Round 9 code reality
+52de314 chore: engineering cleanup — git hygiene + benchmark separation
+89bbf2d feat: expansion readiness — API boundary, CI, test unification
+789d991 feat: public API layer — stable interface boundary via exports map
+76643a4 feat: minimal plugin extension loop — first verified expansion
+4e4feb9 feat: webchat HTTP route + WebSocket push bridge
+4f3cdc0 feat: token-level streaming + wiring cleanup + DEVLOG
+617942f chore: remove accidental symlink entries from tracking
+9e65fe2 feat: replace mock streaming with real InferenceRouter-driven token streaming
+fb81e7f feat: streaming protocol hardening
 c3b71a6 feat: true incremental streaming + terminal failure semantics
+6566c0e docs: reconcile README + DEVLOG to match Round 9 code reality
 21e04c2 feat(state): Round 10 — persistent conversation state
+18bcb98 docs(audit): Round 10 reconciliation — fix docs, CI, test count
+257a7d5 fix(dashboard): export SessionItem/TurnItem from api barrel
+ce7d0fa feat(tools): Round 11 — memory tools + spend persistence
+41d3f25 docs: update README/DEVLOG for Round 11 — 490 tests
 ```
 
 ---

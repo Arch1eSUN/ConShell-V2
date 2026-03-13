@@ -247,7 +247,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 | Core build | ✅ Passing |
 | CLI build | ✅ Passing |
 | Dashboard build | ✅ Passing (tsc + vite) |
-| Functional tests | ✅ 490 passing (33 files) |
+| Functional tests | ✅ 490 passing (34 files) |
 | Benchmarks | ✅ Separate `test:bench` |
 | CI | ✅ GitHub Actions |
 | WebChat | ✅ HTTP + WebSocket + token streaming |
