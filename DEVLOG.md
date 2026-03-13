@@ -15,7 +15,7 @@
 
 - **语言**: TypeScript（strict mode）
 - **包管理**: pnpm monorepo
-- **测试**: vitest（30 个测试文件，461 个测试用例）
+- **测试**: vitest（33 个测试文件，490 个测试用例）
 - **构建**: tsc
 - **CI**: GitHub Actions
 
@@ -562,11 +562,12 @@ c3b71a6 feat: true incremental streaming + terminal failure semantics
 
 | 测试文件 | 用例数 | 状态 |
 |----------|--------|------|
-| `spend.test.ts` [NEW] | 8 | ⏳ (EPERM) |
-| `memory.test.ts` [NEW] | 11 | ⏳ (EPERM) |
-| `builtin.test.ts` [NEW] | 10 | ⏳ (EPERM) |
+| `spend.test.ts` [NEW] | 8 | ✅ |
+| `memory.test.ts` [NEW] | 11 | ✅ |
+| `builtin.test.ts` [NEW] | 10 | ✅ |
+| **总计** | **490 / 490** | **✅ 全通过** |
 
-> **Note**: 测试因 macOS immutable flags (EPERM) 无法在当前环境执行。需 `sudo chflags -R nouchg /Users/archiesun/Desktop/ConShellV2` 后运行。
+
 
 ### 关键设计决策
 

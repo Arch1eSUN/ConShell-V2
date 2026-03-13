@@ -28,13 +28,13 @@ packages/
 | **wallet** | ERC-8004 on-chain identity + x402 micropayments |
 | **channels** | Multi-channel messaging (Telegram, others planned) |
 | **plugins** | Sandboxed plugin system with VM isolation |
-| **memory** | Tiered memory with hot/warm/cold storage |
+| **memory** | Tiered memory with hot/warm/cold storage + memory_store/recall tools |
 | **soul** | Agent identity and personality management |
-| **tools** | 50+ built-in tools across 13 categories |
+| **tools** | 9 built-in tools: shell, filesystem(3), web(2), http, memory(2) |
 | **mcp** | Model Context Protocol gateway |
 | **multiagent** | Multi-agent coordination and spawning |
 | **selfmod** | Self-modification with audit trail |
-| **spend** | Budget tracking and cost management |
+| **spend** | Budget tracking + SQLite-persisted cost management |
 | **evomap** | Evolutionary capability mapping |
 | **compute** | Distributed compute provider management |
 
@@ -234,7 +234,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm workspace
 - **Build:** tsc
-- **Test:** Vitest (461 functional tests + benchmarks)
+- **Test:** Vitest (490 functional tests + benchmarks)
 - **CI:** GitHub Actions
 - **Frontend:** React + Vite
 - **Database:** SQLite (better-sqlite3, WAL mode)
@@ -247,10 +247,12 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 | Core build | ✅ Passing |
 | CLI build | ✅ Passing |
 | Dashboard build | ✅ Passing (tsc + vite) |
-| Functional tests | ✅ 461 passing (30 files) |
+| Functional tests | ✅ 490 passing (33 files) |
 | Benchmarks | ✅ Separate `test:bench` |
 | CI | ✅ GitHub Actions |
 | WebChat | ✅ HTTP + WebSocket + token streaming |
+| Memory tools | ✅ memory_store + memory_recall via MemoryTierManager |
+| Spend persistence | ✅ SpendTracker → SQLite (SpendRepository) |
 | Channels | 🔧 Telegram functional, others planned |
 | Wallet | 🔧 ERC-8004 types + local tracking |
 | Multi-agent | 🔧 Facilitator pattern implemented |
