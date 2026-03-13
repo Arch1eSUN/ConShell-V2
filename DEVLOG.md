@@ -241,7 +241,7 @@ emitStatus(evt: StatusEvent): void;
 
 ```typescript
 type StreamStatus = 'processing' | 'completed' | 'failed';
-type StreamErrorCode = 'INFERENCE_STREAM_FAILED' | 'CHANNEL_ERROR' | 'TIMEOUT';
+type StreamErrorCode = 'INFERENCE_STREAM_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 interface StreamErrorEvent {
   platform: ChannelPlatform;

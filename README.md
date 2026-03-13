@@ -131,15 +131,15 @@ const response = await transport.handleMessage({
 // Success (200)
 { "reply": "...", "sessionId": "user-001", "platform": "webchat", "messageId": "web_out_...", "timestamp": 1234567890 }
 
-// Error (400 / 503 / 504 / 500)
-{ "error": "description", "code": "INVALID_REQUEST | SERVICE_UNAVAILABLE | GATEWAY_TIMEOUT | INTERNAL_ERROR" }
+// Error (400 / 503 / 500)
+{ "error": "description", "code": "INVALID_REQUEST | SERVICE_UNAVAILABLE | INTERNAL_ERROR" }
 ```
 
 | Status | When |
 |--------|------|
+| 200 | Successful response (may include empty `reply` for zero-text or failure) |
 | 400 | Missing/invalid fields, non-JSON body |
 | 503 | WebChat transport or adapter not available |
-| 504 | Response timeout |
 | 500 | Unexpected error |
 
 The route delegates to `WebChatTransport` → `WebChatAdapter` → `ChannelManager` → `Gateway`.
@@ -167,10 +167,35 @@ Connect via WebSocket upgrade on the same port, then subscribe to a session:
 | `subscribe` | Client → Server | Bind WS connection to sessionId |
 | `unsubscribe` | Client → Server | Remove binding |
 | `ping` / `pong` | Both | Keep-alive |
-| `message` | Server → Client | Outbound push |
-| `status` | Server → Client | Processing state |
+| `chunk` | Server → Client | Token-level streaming (incremental, real-time) |
+| `message` | Server → Client | Complete outbound push |
+| `status` | Server → Client | Processing state (`processing` / `completed` / `failed`) |
+| `error` | Server → Client | Session-scoped stream error (`code`, `message`, `retryable`) |
 
-Current limitations: no auth, no persistent sessions, no token-level streaming.
+#### Streaming Behavior (Round 9)
+
+Token-level streaming is implemented with a **one-chunk holdback** strategy:
+
+- Chunks are emitted **during** inference generation (not buffered then replayed)
+- Each `chunk` event carries non-empty `content`, a monotonic `index`, and a `final` flag
+- Only the last content chunk has `final: true`
+- Zero-text completions produce no chunks but still send an outbound message
+- **Pre-token failure**: transparent fallback to route handlers
+- **Post-token failure**: explicit `error` event + `status: failed` (no silent fallback stitching)
+
+```
+Client             Server
+  │─── subscribe ──→ │
+  │←── subscribed ──│
+  │                   │ (inbound message arrives)
+  │←── status ───────│  { status: "processing" }
+  │←── chunk ────────│  { content: "Hello ", index: 0, final: false }  ← real-time
+  │←── chunk ────────│  { content: "World", index: 1, final: true }
+  │←── message ──────│  { content: "Hello World" }  (complete)
+  │←── status ───────│  { status: "completed" }
+```
+
+Current limitations: no auth, no persistent sessions.
 
 See `packages/core/src/channels/webchat/` and `packages/core/src/server/routes/webchat.ts`.
 
@@ -207,7 +232,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm workspace
 - **Build:** tsc
-- **Test:** Vitest (388+ functional tests + 10 benchmarks)
+- **Test:** Vitest (434 functional tests + benchmarks)
 - **CI:** GitHub Actions
 - **Frontend:** React + Vite
 - **Database:** SQLite (better-sqlite3, WAL mode)
@@ -220,9 +245,10 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 | Core build | ✅ Passing |
 | CLI build | ✅ Passing |
 | Dashboard build | ✅ Passing (tsc + vite) |
-| Functional tests | ✅ 335 passing (25 files) |
-| Benchmarks | ✅ 10 tests (separate `test:bench`) |
+| Functional tests | ✅ 434 passing (28 files) |
+| Benchmarks | ✅ Separate `test:bench` |
 | CI | ✅ GitHub Actions |
+| WebChat | ✅ HTTP + WebSocket + token streaming |
 | Channels | 🔧 Telegram functional, others planned |
 | Wallet | 🔧 ERC-8004 types + local tracking |
 | Multi-agent | 🔧 Facilitator pattern implemented |
