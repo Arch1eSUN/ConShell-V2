@@ -30,5 +30,8 @@ jobs:
       - name: Build dashboard
         run: pnpm --filter @conshell/dashboard build
 
+      - name: Typecheck core
+        run: pnpm --filter @conshell/core exec tsc --noEmit
+
       - name: Test core
         run: pnpm --filter @conshell/core test

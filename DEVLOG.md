@@ -1,6 +1,6 @@
 # 🐢 ConShell V2 — 开发日志 (DEVLOG)
 
-> **最后更新**: 2026-03-13 (Round 9)
+> **最后更新**: 2026-03-13 (Round 10)
 > **用途**: 提供给 LLM (GPT/Claude) 快速理解项目全貌，生成下一步开发计划。
 
 ---
@@ -15,7 +15,7 @@
 
 - **语言**: TypeScript（strict mode）
 - **包管理**: pnpm monorepo
-- **测试**: vitest（28 个测试文件，434 个测试用例）
+- **测试**: vitest（30 个测试文件，461 个测试用例）
 - **构建**: tsc
 - **CI**: GitHub Actions
 
@@ -505,6 +505,37 @@ pnpm --filter @conshell/dashboard dev
 89bbf2d feat: expansion readiness — API boundary, CI, test unification
 52de314 chore: engineering cleanup — git hygiene + benchmark separation
 875e324 feat: initial commit — engineering baseline restored
+6566c0e docs: reconcile README + DEVLOG to match Round 9 code reality
+c3b71a6 feat: true incremental streaming + terminal failure semantics
+21e04c2 feat(state): Round 10 — persistent conversation state
 ```
 
-**最新 commit (pending)**: `feat: true incremental streaming + terminal failure semantics`
+---
+
+## Round 10 — Persistent Conversation State (2026-03-13)
+
+**目标**: 实现 session-scoped 持久对话状态，让 runtime 从「streaming chat transport 可用」推进到「runtime 拥有持久化会话状态和可用的 session 界面」。
+
+**Commit**: `21e04c2`
+
+### 交付物
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| Migration v5 | `state/database.ts` | sessions 表 + 2 个索引 |
+| SessionsRepository | `state/repos/sessions.ts` | CRUD / upsert / cascade delete / listWithCount |
+| ConversationService | `channels/webchat/conversation-service.ts` | appendTurn + buildContext + auto-title |
+| Session REST API | `server/routes/sessions.ts` | GET /api/sessions, GET /api/sessions/:id/transcript, DELETE, PATCH |
+| Gateway 注入 | `channels/gateway.ts` | ConversationService 注入，persist user/assistant turns |
+| server-init 注册 | `kernel/server-init.ts` | 条件注入 db → registerSessionRoutes |
+| Dashboard Session UI | `dashboard/src/pages/ChatPage.tsx` | session sidebar + transcript loading + delete |
+| API Client | `dashboard/src/api/client.ts` | SessionItem/TurnItem types + 4 methods |
+| repos re-export | `state/repos/index.ts` | SessionsRepository export |
+
+### 测试
+
+| 测试文件 | 用例数 | 状态 |
+|----------|--------|------|
+| `sessions.test.ts` | 13 | ✅ |
+| `conversation-service.test.ts` | 14 | ✅ |
+| **总计** | **461 / 461** | **✅ 全通过** |

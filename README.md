@@ -195,7 +195,9 @@ Client             Server
   │←── status ───────│  { status: "completed" }
 ```
 
-Current limitations: no auth, no persistent sessions.
+Sessions are persisted to SQLite via `ConversationService` → `SessionsRepository`. The REST API under `/api/sessions/` supports listing, transcript retrieval, title update, and deletion.
+
+Current limitations: no auth.
 
 See `packages/core/src/channels/webchat/` and `packages/core/src/server/routes/webchat.ts`.
 
@@ -232,7 +234,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm workspace
 - **Build:** tsc
-- **Test:** Vitest (434 functional tests + benchmarks)
+- **Test:** Vitest (461 functional tests + benchmarks)
 - **CI:** GitHub Actions
 - **Frontend:** React + Vite
 - **Database:** SQLite (better-sqlite3, WAL mode)
@@ -245,7 +247,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 | Core build | ✅ Passing |
 | CLI build | ✅ Passing |
 | Dashboard build | ✅ Passing (tsc + vite) |
-| Functional tests | ✅ 434 passing (28 files) |
+| Functional tests | ✅ 461 passing (30 files) |
 | Benchmarks | ✅ Separate `test:bench` |
 | CI | ✅ GitHub Actions |
 | WebChat | ✅ HTTP + WebSocket + token streaming |
