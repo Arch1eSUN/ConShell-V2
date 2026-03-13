@@ -203,6 +203,11 @@ export class Gateway {
   // ── Message Routing ────────────────────────────────────
 
   private async routeMessage(msg: ChannelMessage): Promise<void> {
+    // For webchat, use streaming path to emit chunks
+    if (msg.platform === 'webchat') {
+      return this.routeStreamingMessage(msg);
+    }
+
     for (const route of this.routes) {
       // Platform filter
       if (route.from && route.from !== msg.platform) continue;
@@ -222,6 +227,50 @@ export class Gateway {
       } catch (err) {
         this.stats.errors++;
         this.logger.error('Route handler error', { error: String(err) });
+      }
+    }
+  }
+
+  /**
+   * Stream-aware message routing — emits word-level chunks via emitChunk()
+   * before sending the complete message via send().
+   *
+   * This allows WebSocket subscribers to receive token-by-token updates
+   * while the HTTP endpoint still returns the complete response.
+   */
+  private async routeStreamingMessage(msg: ChannelMessage): Promise<void> {
+    for (const route of this.routes) {
+      if (route.from && route.from !== msg.platform) continue;
+      if (route.pattern && !route.pattern.test(msg.content)) continue;
+
+      try {
+        const reply = await route.handler(msg);
+        if (reply) {
+          const target = msg.groupId ?? msg.from;
+
+          // Emit word-level chunks
+          const tokens = reply.split(' ');
+          for (let i = 0; i < tokens.length; i++) {
+            this.manager.emitChunk({
+              platform: msg.platform,
+              to: target,
+              content: tokens[i] + (i < tokens.length - 1 ? ' ' : ''),
+              index: i,
+              final: i === tokens.length - 1,
+            });
+          }
+
+          // Send complete message (HTTP loop + outbound event)
+          await this.send({
+            platform: msg.platform,
+            to: target,
+            content: reply,
+            replyTo: msg.id,
+          });
+        }
+      } catch (err) {
+        this.stats.errors++;
+        this.logger.error('Streaming route handler error', { error: String(err) });
       }
     }
   }

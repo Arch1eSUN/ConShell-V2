@@ -97,6 +97,11 @@ export class WebChatTransport {
     this.timeoutMs = opts?.timeoutMs ?? 30000;
   }
 
+  /** Expose ChannelManager for push bridge wiring (read-only intent) */
+  get channelManager(): ChannelManager {
+    return this.manager;
+  }
+
   /**
    * Process an inbound webchat message through the full channel pipeline.
    *

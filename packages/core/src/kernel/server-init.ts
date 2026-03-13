@@ -96,7 +96,7 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   // ── WebChat Push Bridge ──────────────────────────────────────────
   if (deps.webChatTransport) {
     const { WebChatPushBridge } = await import('../channels/webchat/webchat-push.js');
-    const pushBridge = new WebChatPushBridge(wsServer, (deps.webChatTransport as any).channelManager ?? null);
+    const pushBridge = new WebChatPushBridge(wsServer, deps.webChatTransport.channelManager);
     pushBridge.start();
     logger.info('WebChat push bridge started');
   }

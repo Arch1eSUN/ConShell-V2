@@ -285,4 +285,145 @@ describe('WebChatPushBridge', () => {
     expect(events[1].type).toBe('message');
     expect((events[1].data as any).content).toBe('Final answer');
   });
+
+  // ── 11. Chunk push to subscribers ──
+
+  it('should push chunk events to subscribed session', () => {
+    const sent: Array<{ clientId: string; type: string; data: unknown }> = [];
+    wsServer.send = (clientId: string, type: string, data: unknown) => {
+      sent.push({ clientId, type, data });
+    };
+
+    simulateSubscribe(wsServer, bridge, 'client-1', 'session-abc');
+
+    manager.emitChunk({
+      platform: 'webchat',
+      to: 'session-abc',
+      content: 'Hello',
+      index: 0,
+      final: false,
+    });
+
+    const chunks = sent.filter(s => s.type === 'chunk');
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].clientId).toBe('client-1');
+    expect((chunks[0].data as any).content).toBe('Hello');
+    expect((chunks[0].data as any).sessionId).toBe('session-abc');
+    expect((chunks[0].data as any).index).toBe(0);
+    expect((chunks[0].data as any).final).toBe(false);
+  });
+
+  // ── 12. Chunk session isolation ──
+
+  it('should not push chunks to different sessions', () => {
+    const sent: Array<{ clientId: string; type: string }> = [];
+    wsServer.send = (clientId: string, type: string) => {
+      sent.push({ clientId, type });
+    };
+
+    simulateSubscribe(wsServer, bridge, 'client-A', 'session-A');
+    simulateSubscribe(wsServer, bridge, 'client-B', 'session-B');
+
+    manager.emitChunk({
+      platform: 'webchat',
+      to: 'session-A',
+      content: 'Only for A',
+      index: 0,
+      final: true,
+    });
+
+    const bChunks = sent.filter(s => s.clientId === 'client-B' && s.type === 'chunk');
+    expect(bChunks).toHaveLength(0);
+
+    const aChunks = sent.filter(s => s.clientId === 'client-A' && s.type === 'chunk');
+    expect(aChunks).toHaveLength(1);
+  });
+
+  // ── 13. Chunk ordering and final flag ──
+
+  it('should preserve chunk order with correct index and final flag', () => {
+    const sent: Array<{ type: string; data: unknown }> = [];
+    wsServer.send = (_clientId: string, type: string, data: unknown) => {
+      sent.push({ type, data });
+    };
+
+    simulateSubscribe(wsServer, bridge, 'client-1', 'session-stream');
+
+    const tokens = ['Hello ', 'World ', 'Final'];
+    tokens.forEach((t, i) => {
+      manager.emitChunk({
+        platform: 'webchat',
+        to: 'session-stream',
+        content: t,
+        index: i,
+        final: i === tokens.length - 1,
+      });
+    });
+
+    const chunks = sent.filter(s => s.type === 'chunk');
+    expect(chunks).toHaveLength(3);
+    expect((chunks[0].data as any).index).toBe(0);
+    expect((chunks[0].data as any).final).toBe(false);
+    expect((chunks[1].data as any).index).toBe(1);
+    expect((chunks[1].data as any).final).toBe(false);
+    expect((chunks[2].data as any).index).toBe(2);
+    expect((chunks[2].data as any).final).toBe(true);
+  });
+
+  // ── 14. Non-webchat chunks ignored ──
+
+  it('should ignore chunk events for non-webchat platforms', () => {
+    const sent: Array<{ type: string }> = [];
+    wsServer.send = (_clientId: string, type: string) => {
+      sent.push({ type });
+    };
+
+    simulateSubscribe(wsServer, bridge, 'client-1', 'session-abc');
+
+    manager.emitChunk({
+      platform: 'telegram',
+      to: 'session-abc',
+      content: 'Should be ignored',
+      index: 0,
+      final: true,
+    });
+
+    expect(sent.filter(s => s.type === 'chunk')).toHaveLength(0);
+  });
+
+  // ── 15. Full streaming flow: status → chunk×N → message ──
+
+  it('should push status, then chunks, then final message in order', () => {
+    const sent: Array<{ type: string; data: unknown }> = [];
+    wsServer.send = (_clientId: string, type: string, data: unknown) => {
+      sent.push({ type, data });
+    };
+
+    simulateSubscribe(wsServer, bridge, 'client-1', 'session-full');
+
+    // 1. Status
+    bridge.pushStatus('session-full', 'processing');
+
+    // 2. Chunks
+    manager.emitChunk({ platform: 'webchat', to: 'session-full', content: 'Hello ', index: 0, final: false });
+    manager.emitChunk({ platform: 'webchat', to: 'session-full', content: 'World', index: 1, final: true });
+
+    // 3. Complete message
+    (manager as any).emit('message:outbound', {
+      platform: 'webchat',
+      to: 'session-full',
+      content: 'Hello World',
+    } satisfies OutboundMessage);
+
+    const events = sent.filter(s => s.type !== 'subscribed');
+    expect(events).toHaveLength(4);
+    expect(events[0].type).toBe('status');
+    expect(events[1].type).toBe('chunk');
+    expect((events[1].data as any).content).toBe('Hello ');
+    expect(events[2].type).toBe('chunk');
+    expect((events[2].data as any).content).toBe('World');
+    expect((events[2].data as any).final).toBe(true);
+    expect(events[3].type).toBe('message');
+    expect((events[3].data as any).content).toBe('Hello World');
+  });
 });

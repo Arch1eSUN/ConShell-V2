@@ -63,6 +63,7 @@ export type {
   ChannelPlatform,
   ChannelState,
   OutboundMessage,
+  StreamChunk,
 } from './channels/index.js';
 
 // WebChat transport (first real channel implementation)

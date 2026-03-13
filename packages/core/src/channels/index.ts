@@ -69,6 +69,19 @@ export interface OutboundMessage {
   replyTo?: string;
 }
 
+/** A single token/chunk in a streaming response */
+export interface StreamChunk {
+  platform: ChannelPlatform;
+  /** Target session/user ID */
+  to: string;
+  /** Current token/chunk content */
+  content: string;
+  /** Chunk sequence number (0-based) */
+  index: number;
+  /** Whether this is the final chunk */
+  final: boolean;
+}
+
 // ── Channel Adapter Interface ───────────────────────────
 
 /**
@@ -93,6 +106,7 @@ export interface ChannelAdapter {
 export type ChannelEventMap = {
   'message:inbound':  ChannelMessage;
   'message:outbound': OutboundMessage;
+  'message:chunk':    StreamChunk;
   'channel:connected':    { platform: ChannelPlatform };
   'channel:disconnected': { platform: ChannelPlatform; reason?: string };
   'channel:error':        { platform: ChannelPlatform; error: string };
@@ -249,6 +263,11 @@ export class ChannelManager {
     const messages = [...this.inboundQueue];
     this.inboundQueue = [];
     return messages;
+  }
+
+  /** Emit a streaming chunk event (does not go through adapter.send) */
+  emitChunk(chunk: StreamChunk): void {
+    this.emit('message:chunk', chunk);
   }
 
   // ── Events ──────────────────────────────────────────
