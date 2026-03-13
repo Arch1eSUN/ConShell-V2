@@ -24,7 +24,7 @@ export function registerMemoryRoutes(
         relationships: context.relationships.length,
         skills: context.skills.length,
       },
-      hot: memory.getHot().slice(-20), // 最近20条
+      hotSessions: stats.hotSize,
       timestamp: new Date().toISOString(),
     });
   });

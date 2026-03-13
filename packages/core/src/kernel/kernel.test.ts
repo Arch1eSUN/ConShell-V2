@@ -1,14 +1,43 @@
 /**
- * Kernel tests — boot types, stage runner, provider factory, server init exports
+ * Kernel tests — boot types, stage runner, provider factory, server init exports,
+ * and memory tool registration verification.
+ *
+ * Round 12: Added test verifying boot registers memory_store + memory_recall tools.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { registerProviders, type ProviderConfig } from '../kernel/provider-factory.js';
+import { ToolExecutor } from '../runtime/tool-executor.js';
+import { createMemoryTools } from '../runtime/tools/memory.js';
+import type { MemoryTierManager, MemoryContext } from '../memory/tier-manager.js';
 
 function makeLogger() {
   return {
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     child: () => makeLogger(),
   } as any;
+}
+
+function createMockMemory(): MemoryTierManager {
+  return {
+    pushHot: vi.fn(),
+    getHot: vi.fn().mockReturnValue([]),
+    clearHot: vi.fn(),
+    buildContext: vi.fn().mockReturnValue({
+      sessionSummaries: [],
+      relevantFacts: [],
+      relationships: [],
+      recentEpisodes: [],
+      skills: [],
+      estimatedTokens: 0,
+    } as MemoryContext),
+    storeFact: vi.fn(),
+    storeEpisode: vi.fn(),
+    storeRelationship: vi.fn(),
+    storeProcedure: vi.fn(),
+    saveSessionSummary: vi.fn(),
+    saveSoulSnapshot: vi.fn(),
+    stats: vi.fn().mockReturnValue({ hotSize: 0, soulVersions: 0 }),
+  } as unknown as MemoryTierManager;
 }
 
 describe('Kernel', () => {
@@ -57,6 +86,65 @@ describe('Kernel', () => {
       const count = await registerProviders(mockRouter as any, configs, logger);
       // Count is 0 because register threw
       expect(count).toBe(0);
+    });
+  });
+
+  describe('Memory Tools Registration (Round 12)', () => {
+    it('ToolExecutor should include memory_store and memory_recall after registration', async () => {
+      const logger = makeLogger();
+      const executor = new ToolExecutor(logger);
+      const memory = createMockMemory();
+
+      // Simulate what Kernel boot Step 8 does
+      const { allBuiltinTools } = await import('../runtime/tools/index.js');
+      executor.registerTools(allBuiltinTools);
+
+      const memoryTools = createMemoryTools(memory);
+      executor.registerTools(memoryTools);
+
+      const toolNames = executor.listTools();
+      expect(toolNames).toContain('memory_store');
+      expect(toolNames).toContain('memory_recall');
+
+      // Total tool count: 7 builtin + 2 memory = 9
+      expect(executor.stats().registeredTools).toBe(9);
+    });
+
+    it('memory_store should be callable through ToolExecutor', async () => {
+      const logger = makeLogger();
+      const executor = new ToolExecutor(logger);
+      const memory = createMockMemory();
+
+      const memoryTools = createMemoryTools(memory);
+      executor.registerTools(memoryTools);
+
+      const result = await executor.executeOne({
+        id: 'tc_1',
+        name: 'memory_store',
+        arguments: JSON.stringify({ type: 'fact', category: 'test', key: 'k1', value: 'v1' }),
+      });
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toContain('Stored fact');
+      expect(memory.storeFact).toHaveBeenCalledWith('test', 'k1', 'v1');
+    });
+
+    it('memory_recall should be callable through ToolExecutor', async () => {
+      const logger = makeLogger();
+      const executor = new ToolExecutor(logger);
+      const memory = createMockMemory();
+
+      const memoryTools = createMemoryTools(memory);
+      executor.registerTools(memoryTools);
+
+      const result = await executor.executeOne({
+        id: 'tc_2',
+        name: 'memory_recall',
+        arguments: JSON.stringify({ type: 'context' }),
+      });
+
+      expect(result.isError).toBe(false);
+      expect(memory.buildContext).toHaveBeenCalled();
     });
   });
 });

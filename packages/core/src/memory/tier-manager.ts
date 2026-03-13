@@ -73,7 +73,7 @@ export class MemoryTierManager {
   private sessionRepo: SessionSummariesRepository;
 
   // Hot tier — in-memory buffer for current session
-  private hotBuffer: Array<{ role: string; content: string; ts: number }> = [];
+  private hotBuffers = new Map<string, Array<{ role: string; content: string; ts: number }>>();
 
   constructor(db: Database.Database, logger: Logger, opts?: TierManagerOptions) {
     this.logger = logger.child('memory');
@@ -93,24 +93,35 @@ export class MemoryTierManager {
     this.sessionRepo = new SessionSummariesRepository(db);
   }
 
-  // ── Hot Tier (当前会话) ───────────────────────────────────────────
+  // ── Hot Tier (per-session working memory) ─────────────────────────
 
-  /** 追加到 hot buffer */
-  pushHot(role: string, content: string): void {
-    this.hotBuffer.push({ role, content, ts: Date.now() });
-    if (this.hotBuffer.length > this.opts.hotLimit) {
-      this.hotBuffer.shift(); // FIFO eviction
+  /** 追加到 session-scoped hot buffer */
+  pushHot(sessionId: string, role: string, content: string): void {
+    let buf = this.hotBuffers.get(sessionId);
+    if (!buf) {
+      buf = [];
+      this.hotBuffers.set(sessionId, buf);
+    }
+    buf.push({ role, content, ts: Date.now() });
+    if (buf.length > this.opts.hotLimit) {
+      buf.shift(); // FIFO eviction
     }
   }
 
-  /** 获取 hot buffer 内容 */
-  getHot(): Array<{ role: string; content: string }> {
-    return this.hotBuffer.map(({ role, content }) => ({ role, content }));
+  /** 获取 session-scoped hot buffer 内容 */
+  getHot(sessionId: string): Array<{ role: string; content: string }> {
+    const buf = this.hotBuffers.get(sessionId);
+    if (!buf) return [];
+    return buf.map(({ role, content }) => ({ role, content }));
   }
 
-  /** 清除 hot buffer (会话结束时) */
-  clearHot(): void {
-    this.hotBuffer = [];
+  /** 清除 hot buffer. If sessionId provided, clear that session only; otherwise clear all. */
+  clearHot(sessionId?: string): void {
+    if (sessionId) {
+      this.hotBuffers.delete(sessionId);
+    } else {
+      this.hotBuffers.clear();
+    }
   }
 
   // ── 上下文构建 ────────────────────────────────────────────────────
@@ -235,8 +246,10 @@ export class MemoryTierManager {
     hotSize: number;
     soulVersions: number;
   } {
+    let hotSize = 0;
+    for (const buf of this.hotBuffers.values()) hotSize += buf.length;
     return {
-      hotSize: this.hotBuffer.length,
+      hotSize,
       soulVersions: this.soulRepo.count(),
     };
   }

@@ -12,6 +12,7 @@ import type { ToolExecutor } from '../runtime/tool-executor.js';
 import type { SkillRegistry } from '../skills/registry.js';
 import type { MemoryTierManager } from '../memory/tier-manager.js';
 import type { WebChatTransport } from '../channels/webchat/webchat-transport.js';
+import type { ConversationService } from '../channels/webchat/conversation-service.js';
 import { HttpServer } from '../server/http.js';
 import { WebSocketServer } from '../server/websocket.js';
 
@@ -30,6 +31,8 @@ export interface ServerInitDeps {
   webChatTransport?: WebChatTransport;
   /** Database instance for persistent state */
   db?: any;
+  /** Optional: ConversationService for session persistence (Round 12) */
+  conversationService?: ConversationService;
 }
 
 export interface ServerInstances {
@@ -90,13 +93,19 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   registerProxyRoutes(httpServer, inference, logger);
 
   // ── ConversationService + Session Routes ──────────────────────────
-  if (deps.db) {
+  // Use the ConversationService passed from kernel if available;
+  // otherwise create a new one from db (backward compat).
+  let conversationService = deps.conversationService ?? null;
+  if (!conversationService && deps.db) {
     const { SessionsRepository } = await import('../state/repos/sessions.js');
     const { TurnsRepository } = await import('../state/repos/turns.js');
     const { ConversationService } = await import('../channels/webchat/conversation-service.js');
     const sessionsRepo = new SessionsRepository(deps.db);
     const turnsRepo = new TurnsRepository(deps.db);
-    const conversationService = new ConversationService(sessionsRepo, turnsRepo);
+    conversationService = new ConversationService(sessionsRepo, turnsRepo);
+  }
+
+  if (conversationService) {
     registerSessionRoutes(httpServer, conversationService, logger);
     logger.info('Session routes registered');
   }

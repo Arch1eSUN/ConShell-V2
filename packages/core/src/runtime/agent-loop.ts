@@ -7,7 +7,10 @@
  * 3. Observe: 收集结果 → 反馈给LLM
  * 4. Persist: 写TurnsRepo + 更新Memory
  *
- * 支持流式输出 + EvoMap进化资产发布
+ * 支持流式输出 + session-isolated context + EvoMap进化资产发布
+ *
+ * Round 12: session-aware processing — each session gets its own
+ * hot buffer in MemoryTierManager while sharing warm/cold long-term memory.
  */
 import type { Logger, Message, ToolCallRequest } from '../types/common.js';
 import type { StreamChunk } from '../types/inference.js';
@@ -15,6 +18,7 @@ import type { InferenceRouter } from '../inference/index.js';
 import type { ToolExecutor } from './tool-executor.js';
 import type { MemoryTierManager, MemoryContext } from '../memory/tier-manager.js';
 import type { SoulSystem } from '../soul/system.js';
+import type { ConversationService } from '../channels/webchat/conversation-service.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -30,6 +34,7 @@ export interface AgentLoopOptions {
 }
 
 export interface TurnRecord {
+  sessionId: string;
   userMessage: string;
   assistantResponse: string;
   toolCalls: ToolCallRequest[];
@@ -39,7 +44,24 @@ export interface TurnRecord {
   durationMs: number;
 }
 
+/** Streaming chunk emitted by processMessageStream */
+export interface AgentStreamEvent {
+  type: 'text' | 'tool_call' | 'tool_result' | 'done' | 'error';
+  /** For type='text': incremental text content */
+  text?: string;
+  /** For type='tool_call': tool call info */
+  toolCall?: ToolCallRequest;
+  /** For type='tool_result': tool execution result */
+  toolResult?: { name: string; content: string; isError: boolean };
+  /** For type='done': complete turn record */
+  turn?: TurnRecord;
+  /** For type='error': error message */
+  error?: string;
+}
+
 // ── AgentLoop ─────────────────────────────────────────────────────────
+
+const DEFAULT_SESSION = '__default__';
 
 export class AgentLoop {
   private logger: Logger;
@@ -47,6 +69,7 @@ export class AgentLoop {
   private toolExecutor: ToolExecutor;
   private memory: MemoryTierManager;
   private soul: SoulSystem;
+  private conversationService: ConversationService | null;
   private opts: Required<AgentLoopOptions>;
   private _turnCount = 0;
 
@@ -57,12 +80,14 @@ export class AgentLoop {
     soul: SoulSystem,
     logger: Logger,
     opts?: AgentLoopOptions,
+    conversationService?: ConversationService,
   ) {
     this.logger = logger.child('agent-loop');
     this.router = router;
     this.toolExecutor = toolExecutor;
     this.memory = memory;
     this.soul = soul;
+    this.conversationService = conversationService ?? null;
     this.opts = {
       maxIterations: opts?.maxIterations ?? 10,
       defaultModel: opts?.defaultModel ?? 'gpt-4o',
@@ -73,25 +98,38 @@ export class AgentLoop {
 
   /**
    * 处理一轮用户输入 (完整ReAct循环)
+   * @param userMessage - 用户消息
+   * @param sessionId  - 会话标识 (隔离 hot buffer 上下文)
    */
-  async processMessage(userMessage: string): Promise<string> {
+  async processMessage(userMessage: string, sessionId?: string): Promise<string> {
+    const sid = sessionId ?? DEFAULT_SESSION;
     const startTime = Date.now();
     this._turnCount++;
 
-    this.logger.info('Processing message', { turn: this._turnCount });
+    this.logger.info('Processing message', { turn: this._turnCount, sessionId: sid });
 
-    // 0. 推入记忆
-    this.memory.pushHot('user', userMessage);
+    // 0. 推入 session-scoped 记忆
+    this.memory.pushHot(sid, 'user', userMessage);
 
     // 1. 构建上下文
     const memCtx = this.memory.buildContext();
     const systemPrompt = this.buildSystemPrompt(memCtx);
 
-    // 2. 构建对话历史
-    const messages: Message[] = [
-      { role: 'system', content: systemPrompt },
-      ...this.memory.getHot().map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    ];
+    // 2. 构建对话历史 — prefer ConversationService for persistent context
+    let messages: Message[];
+    if (this.conversationService && sessionId) {
+      messages = this.conversationService.buildContext(sessionId, { systemPrompt });
+      // If conversation service has no history yet (first turn), add current message
+      if (messages.length <= 1) { // only system prompt or empty
+        messages.push({ role: 'user', content: userMessage });
+      }
+    } else {
+      // Fallback to hot buffer
+      messages = [
+        { role: 'system', content: systemPrompt },
+        ...this.memory.getHot(sid).map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      ];
+    }
 
     // 3. ReAct 循环
     let iterations = 0;
@@ -161,12 +199,13 @@ export class AgentLoop {
     }
 
     // 4. Persist
-    this.memory.pushHot('assistant', finalResponse);
+    this.memory.pushHot(sid, 'assistant', finalResponse);
 
     // 存储事件到 episodic
-    this.memory.storeEpisode('conversation', `User: ${userMessage.slice(0, 100)} → Agent: ${finalResponse.slice(0, 100)}`, 0.5);
+    this.memory.storeEpisode('conversation', `User: ${userMessage.slice(0, 100)} → Agent: ${finalResponse.slice(0, 100)}`, 0.5, sid);
 
     const turn: TurnRecord = {
+      sessionId: sid,
       userMessage,
       assistantResponse: finalResponse,
       toolCalls: allToolCalls,
@@ -180,6 +219,7 @@ export class AgentLoop {
 
     this.logger.info('Message processed', {
       turn: this._turnCount,
+      sessionId: sid,
       iterations,
       toolCallCount: allToolCalls.length,
       responseLength: finalResponse.length,
@@ -187,6 +227,134 @@ export class AgentLoop {
     });
 
     return finalResponse;
+  }
+
+  /**
+   * Streaming version — yields AgentStreamEvents for real-time delivery.
+   * Used by Gateway to emit WS chunks during agent processing.
+   */
+  async *processMessageStream(userMessage: string, sessionId?: string): AsyncGenerator<AgentStreamEvent> {
+    const sid = sessionId ?? DEFAULT_SESSION;
+    const startTime = Date.now();
+    this._turnCount++;
+
+    this.logger.info('Processing message (stream)', { turn: this._turnCount, sessionId: sid });
+
+    // 0. Push user message to session-scoped hot buffer
+    this.memory.pushHot(sid, 'user', userMessage);
+
+    // 1. Build context
+    const memCtx = this.memory.buildContext();
+    const systemPrompt = this.buildSystemPrompt(memCtx);
+
+    let messages: Message[];
+    if (this.conversationService && sessionId) {
+      messages = this.conversationService.buildContext(sessionId, { systemPrompt });
+      if (messages.length <= 1) {
+        messages.push({ role: 'user', content: userMessage });
+      }
+    } else {
+      messages = [
+        { role: 'system', content: systemPrompt },
+        ...this.memory.getHot(sid).map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      ];
+    }
+
+    // 2. ReAct loop with streaming
+    let iterations = 0;
+    let finalResponse = '';
+    const allToolCalls: ToolCallRequest[] = [];
+    const allToolResults: string[] = [];
+    let totalTokens = 0;
+
+    try {
+      while (iterations < this.opts.maxIterations) {
+        iterations++;
+
+        let fullText = '';
+        const pendingToolCalls: ToolCallRequest[] = [];
+
+        const stream = this.router.chat(messages, {
+          model: this.opts.defaultModel,
+          tools: this.toolExecutor.getToolDefinitions(),
+        });
+
+        for await (const chunk of stream) {
+          if (chunk.type === 'text' && chunk.text) {
+            fullText += chunk.text;
+            yield { type: 'text' as const, text: chunk.text };
+          } else if (chunk.type === 'tool_call' && chunk.toolCall) {
+            const tc: ToolCallRequest = {
+              id: chunk.toolCall.id,
+              name: chunk.toolCall.name,
+              arguments: chunk.toolCall.arguments,
+            };
+            pendingToolCalls.push(tc);
+            yield { type: 'tool_call' as const, toolCall: tc };
+          } else if (chunk.type === 'usage' && chunk.usage) {
+            totalTokens += chunk.usage.inputTokens + chunk.usage.outputTokens;
+          }
+        }
+
+        if (pendingToolCalls.length === 0) {
+          finalResponse = fullText;
+          break;
+        }
+
+        // Execute tools
+        allToolCalls.push(...pendingToolCalls);
+        const results = await this.toolExecutor.executeMany(pendingToolCalls);
+        const resultTexts = results.map(r => r.content);
+        allToolResults.push(...resultTexts);
+
+        // Yield tool results
+        for (const result of results) {
+          yield {
+            type: 'tool_result' as const,
+            toolResult: { name: result.name, content: result.content, isError: result.isError },
+          };
+        }
+
+        // Update messages for next iteration
+        messages.push({
+          role: 'assistant',
+          content: fullText || '[tool_calls]',
+          toolCalls: pendingToolCalls,
+        });
+        for (const result of results) {
+          messages.push({
+            role: 'tool',
+            content: result.content,
+            toolCallId: result.toolCallId,
+            name: result.name,
+          });
+        }
+      }
+
+      // Persist
+      this.memory.pushHot(sid, 'assistant', finalResponse);
+      this.memory.storeEpisode('conversation', `User: ${userMessage.slice(0, 100)} → Agent: ${finalResponse.slice(0, 100)}`, 0.5, sid);
+
+      const turn: TurnRecord = {
+        sessionId: sid,
+        userMessage,
+        assistantResponse: finalResponse,
+        toolCalls: allToolCalls,
+        toolResults: allToolResults,
+        iterations,
+        totalTokens,
+        durationMs: Date.now() - startTime,
+      };
+
+      this.opts.onTurnComplete(turn);
+      yield { type: 'done' as const, turn };
+
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.logger.error('Agent loop stream error', { sessionId: sid, error: errMsg });
+      yield { type: 'error' as const, error: errMsg };
+      throw err;
+    }
   }
 
   /** 构建系统提示 */

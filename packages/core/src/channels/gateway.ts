@@ -10,6 +10,7 @@
  */
 import type { Logger, Message } from '../types/common.js';
 import type { InferenceRouter } from '../inference/index.js';
+import type { AgentLoop } from '../runtime/agent-loop.js';
 import type {
   ChannelPlatform, ChannelConfig, ChannelMessage, OutboundMessage,
   ChannelAdapter, ChannelState, StreamErrorCode,
@@ -34,8 +35,10 @@ export interface GatewayConfig {
   autoReconnect?: boolean;
   /** Max reconnect attempts per channel */
   maxReconnectAttempts?: number;
-  /** Optional inference router for real streaming (when absent, falls back to route handlers) */
+  /** Optional inference router for real streaming (when absent and no agentLoop, falls back to route handlers) */
   inferenceRouter?: InferenceRouter;
+  /** Optional agent loop for full ReAct processing (Round 12) */
+  agentLoop?: AgentLoop;
   /** Default model for inference streaming (default: 'gpt-4') */
   defaultModel?: string;
   /** Default system prompt for inference streaming */
@@ -72,6 +75,7 @@ export class Gateway {
   private startTime = 0;
   private stats = { inbound: 0, outbound: 0, errors: 0 };
   private inferenceRouter: InferenceRouter | null;
+  private agentLoop: AgentLoop | null;
   private conversationService: ConversationService | null;
 
   // Rate limiting
@@ -86,6 +90,7 @@ export class Gateway {
     };
     this.manager = new ChannelManager({ logger: this.logger });
     this.inferenceRouter = config.inferenceRouter ?? null;
+    this.agentLoop = config.agentLoop ?? null;
     this.conversationService = config.conversationService ?? null;
   }
 
@@ -265,7 +270,48 @@ export class Gateway {
     // Emit processing status
     this.manager.emitStatus(msg.platform, target, 'processing');
 
-    // ── Real inference streaming path ──
+    // ── AgentLoop path (Round 12: full ReAct + tools + memory) ──
+    if (this.agentLoop) {
+      try {
+        const result = await this.routeWithAgentLoop(msg, target);
+        await this.send({
+          platform: msg.platform,
+          to: target,
+          content: result.fullText,
+          replyTo: msg.id,
+        });
+        this.manager.emitStatus(msg.platform, target, 'completed');
+      } catch (err) {
+        this.stats.errors++;
+        this.logger.error('AgentLoop streaming error', { error: String(err) });
+
+        const chunksEmitted = (err as any)?._chunksEmitted ?? 0;
+        if (chunksEmitted > 0) {
+          this.manager.emitError({
+            platform: msg.platform,
+            to: target,
+            code: 'INFERENCE_STREAM_FAILED' as StreamErrorCode,
+            message: String(err instanceof Error ? err.message : err),
+            retryable: true,
+          });
+          await this.sendSafe(msg.platform, target, '', msg.id);
+          this.manager.emitStatus(msg.platform, target, 'failed');
+        } else {
+          try {
+            await this.routeFallback(msg, target);
+            this.manager.emitStatus(msg.platform, target, 'completed');
+          } catch (fallbackErr) {
+            this.stats.errors++;
+            this.logger.error('Fallback also failed', { error: String(fallbackErr) });
+            await this.sendSafe(msg.platform, target, '', msg.id);
+            this.manager.emitStatus(msg.platform, target, 'failed');
+          }
+        }
+      }
+      return;
+    }
+
+    // ── Real inference streaming path (legacy, no AgentLoop) ──
     if (this.inferenceRouter) {
       try {
         const result = await this.routeWithInference(msg, target);
@@ -337,8 +383,106 @@ export class Gateway {
    * - Correct final flag semantics (only last chunk is final=true)
    * - No empty final markers
    *
-   * Returns { chunksEmitted, fullText } for the caller.
-   * On error, attaches _chunksEmitted to the thrown error for failure branching.
+  /**
+   * Route through AgentLoop (Round 12).
+   *
+   * The AgentLoop's processMessageStream yields incremental text + tool events.
+   * Gateway applies one-chunk holdback for correct final=true WS semantics.
+   *
+   * Persistence ownership:
+   * - User turn: Gateway persists BEFORE entering AgentLoop
+   * - Assistant turn: Gateway persists AFTER AgentLoop completes
+   * - Tool calls: stored in the assistant turn's toolCallsJson
+   * This keeps persistence co-located with the streaming lifecycle
+   * and avoids AgentLoop having to know about ConversationService persistence
+   * (its ConversationService is used only for context building).
+   */
+  private async routeWithAgentLoop(
+    msg: ChannelMessage,
+    target: string,
+  ): Promise<{ chunksEmitted: number; fullText: string }> {
+    const loop = this.agentLoop!;
+    const conv = this.conversationService;
+    const sessionId = msg.groupId ?? msg.from;
+
+    // ── Persist user turn ──
+    if (conv) {
+      conv.appendTurn({
+        sessionId,
+        role: 'user',
+        content: msg.content,
+        channel: msg.platform,
+      });
+    }
+
+    let fullText = '';
+    let chunkIndex = 0;
+    let chunksEmitted = 0;
+    let pendingChunk: { content: string; index: number } | null = null;
+    let toolCallsJson: string | undefined;
+    const toolCalls: Array<{ name: string; id: string; arguments: string }> = [];
+
+    try {
+      for await (const event of loop.processMessageStream(msg.content, sessionId)) {
+        if (event.type === 'text' && event.text) {
+          fullText += event.text;
+
+          if (pendingChunk !== null) {
+            this.manager.emitChunk({
+              platform: msg.platform,
+              to: target,
+              content: pendingChunk.content,
+              index: pendingChunk.index,
+              final: false,
+            });
+            chunksEmitted++;
+          }
+          pendingChunk = { content: event.text, index: chunkIndex++ };
+        } else if (event.type === 'tool_call' && event.toolCall) {
+          toolCalls.push(event.toolCall);
+        }
+        // tool_result and done are handled implicitly
+      }
+    } catch (err) {
+      const tokensSeen = chunksEmitted + (pendingChunk !== null ? 1 : 0);
+      const wrapped = err instanceof Error ? err : new Error(String(err));
+      (wrapped as any)._chunksEmitted = tokensSeen;
+      throw wrapped;
+    }
+
+    // Emit last pending chunk as final=true
+    if (pendingChunk !== null) {
+      this.manager.emitChunk({
+        platform: msg.platform,
+        to: target,
+        content: pendingChunk.content,
+        index: pendingChunk.index,
+        final: true,
+      });
+      chunksEmitted++;
+    }
+
+    // ── Persist assistant turn ──
+    if (toolCalls.length > 0) {
+      toolCallsJson = JSON.stringify(toolCalls);
+    }
+    if (conv && fullText) {
+      conv.appendTurn({
+        sessionId,
+        role: 'assistant',
+        content: fullText,
+        channel: msg.platform,
+        model: this.config.defaultModel ?? 'gpt-4',
+        toolCallsJson,
+      });
+    }
+
+    return { chunksEmitted, fullText };
+  }
+
+  /**
+   * Real inference-backed streaming with one-chunk holdback (legacy path).
+   * Used when no AgentLoop is available but an InferenceRouter is.
    */
   private async routeWithInference(
     msg: ChannelMessage,

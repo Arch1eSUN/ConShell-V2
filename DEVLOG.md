@@ -1,6 +1,6 @@
 # 🐢 ConShell V2 — 开发日志 (DEVLOG)
 
-> **最后更新**: 2026-03-13 (Round 11)
+> **最后更新**: 2026-03-13 (Round 12)
 > **用途**: 提供给 LLM (GPT/Claude) 快速理解项目全貌，生成下一步开发计划。
 
 ---
@@ -15,7 +15,7 @@
 
 - **语言**: TypeScript（strict mode）
 - **包管理**: pnpm monorepo
-- **测试**: vitest（34 个测试文件（含 benchmark），490 个测试用例）
+- **测试**: vitest（34 个测试文件（含 benchmark），507 个测试用例）
 - **构建**: tsc
 - **CI**: GitHub Actions
 
@@ -382,20 +382,21 @@ core/src/
 | `plugins.test.ts` | 12 | 插件管理 |
 | `evomap.test.ts` | 11 | 演化映射 |
 | `mcp/gateway.test.ts` | 11 | MCP 网关 |
-| `memory.test.ts` (tools/) | 11 | 记忆工具（Round 11） |
+| `memory.test.ts` (tools/) | 12 | 记忆工具（Round 11） |
 | `config.test.ts` | 10 | 配置加载 |
 | `selfmod.test.ts` | 10 | 自我修改 |
 | `builtin.test.ts` | 10 | 内建工具集成（Round 11） |
 | `wallet.test.ts` | 9 | 钱包 |
 | `erc8004.test.ts` | 9 | ERC-8004 |
+| `agent-loop.test.ts` | 9 | AgentLoop session 隔离 + 流式 + 工具调用（Round 12） |
 | `spend.test.ts` (repos/) | 8 | Spend 持久化（Round 11） |
 | `logger.test.ts` | 8 | 日志 |
+| `kernel.test.ts` | 8 | 内核启动 + 记忆工具注册（Round 12） |
 | `facilitator.test.ts` | 7 | 便利工具 |
-| `kernel.test.ts` | 5 | 内核启动 |
 | `compute.test.ts` | 4 | 算力管理 |
 | `git.test.ts` | 4 | Git 操作 |
 | `perf.test.ts` | — | Benchmark（独立运行） |
-| **合计** | **490** | **34 文件（含 benchmark）** |
+| **合计** | **507** | **34 文件（含 benchmark）** |
 
 ---
 
@@ -456,7 +457,7 @@ Client             Server
 ### 高优先级
 
 1. ~~**Session 持久化**~~ ✅ 已在 Round 10 完成（SessionsRepository + ConversationService）
-2. **AgentLoop 集成** — 将 WebChat 请求接入真实 Agent 循环（ReAct Think→Act→Observe→Persist），而非简单 route handler。
+2. ~~**AgentLoop 集成**~~ ✅ 已在 Round 12 完成（session-isolated AgentLoop + memory tools wiring + Gateway 路由）
 3. **Dashboard 真实数据集成** — 让 Dashboard 各页面使用 real backend data 而非 mock。
 
 ### 中优先级
@@ -588,3 +589,38 @@ ce7d0fa feat(tools): Round 11 — memory tools + spend persistence
 1. **Memory 工具使用工厂模式**: `createMemoryTools(memory)` 而非全局导出，因为 MemoryTierManager 需要 runtime（db实例）才能创建
 2. **SpendTracker 向后兼容**: repo 参数可选，不传则退回纯内存模式
 3. **SpendRepository 复用已有表**: spend_tracking 表已在 migration v2 创建，无需新增 migration
+
+---
+
+## Round 12 — Session-Isolated AgentLoop Integration + Runtime Memory Tool Wiring (2026-03-13)
+
+**目标**: 将 WebChat 请求接入完整 Agent 循环（ReAct Think→Act→Observe→Persist），实现 session-isolated 上下文 + 记忆工具运行时注册 + 流式 AgentLoop 输出。
+
+### 交付物
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| T1: Kernel 记忆工具注册 | `kernel/index.ts` | Step 8 调用 `createMemoryTools(memory)` 并注册到 ToolExecutor |
+| T2: Session-scoped hot buffer | `memory/tier-manager.ts` | `hotBuffer` → `hotBuffers: Map<string, HotEntry[]>`, pushHot/getHot/clearHot 接受 sessionId |
+| T2: AgentLoop session 感知 | `runtime/agent-loop.ts` | `processMessage(msg, sessionId?)` + `processMessageStream()` async generator |
+| T2: ConversationService 注入 | `runtime/agent-loop.ts` | 可选 ConversationService 用于持久化上下文构建 |
+| T3: Gateway AgentLoop 路由 | `channels/gateway.ts` | `routeWithAgentLoop()` — AgentLoop streaming + one-chunk holdback + 持久化 |
+| T3: Gateway 配置扩展 | `channels/gateway.ts` | GatewayConfig 新增 `agentLoop` 字段 |
+| T4: Kernel wiring | `kernel/index.ts` | ConversationService 在 Step 8 创建并传入 AgentLoop + server-init |
+| T4: ServerInitDeps 扩展 | `kernel/server-init.ts` | 新增 `conversationService` 可选字段 |
+| Memory API 适配 | `server/routes/memory.ts` | `getHot()` → `hotSessions` 统计 |
+
+### 关键设计决策
+
+1. **Hot buffer per-session, warm/cold 全局共享**: 每个 session 有独立的 working memory (hot buffer), 但长期记忆 (facts, episodes, relationships) 是全局的——一个 agent 一个大脑、多个会话窗口
+2. **持久化所有权在 Gateway 侧**: Gateway 负责写入 user/assistant turns (通过 ConversationService), AgentLoop 只用 ConversationService 做上下文 read, 避免 double-write
+3. **processMessageStream() async generator**: 让 Gateway 能实时获取 text/tool_call/tool_result 事件, 保持与已有 WS chunk 协议的兼容
+4. **向后兼容**: `processMessage()` 在无 sessionId 时使用 `'__default__'` 键, 不破坏已有测试
+
+### 测试
+
+| 测试文件 | 用例数 | 状态 |
+|----------|--------|------|
+| `agent-loop.test.ts` [NEW] | 9 | ✅ |
+| `kernel.test.ts` [UPDATED] | 8 (+3) | ✅ |
+| **总计** | **507 / 507** | **✅ 全通过** |

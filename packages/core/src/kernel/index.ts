@@ -207,13 +207,27 @@ export class Kernel {
         const { allBuiltinTools } = await import('../runtime/tools/index.js');
         toolExecutor.registerTools(allBuiltinTools);
 
+        // Register memory tools (requires runtime-injected MemoryTierManager)
+        const { createMemoryTools } = await import('../runtime/tools/memory.js');
+        const memoryTools = createMemoryTools(memory);
+        toolExecutor.registerTools(memoryTools);
+
+        // Create ConversationService for persistent session context
+        const { SessionsRepository } = await import('../state/repos/sessions.js');
+        const { TurnsRepository } = await import('../state/repos/turns.js');
+        const { ConversationService } = await import('../channels/webchat/conversation-service.js');
+        const sessionsRepo = new SessionsRepository(db);
+        const turnsRepo = new TurnsRepository(db);
+        const conversationService = new ConversationService(sessionsRepo, turnsRepo);
+
         const defaultModel = cfgGet<string>(config, 'model', 'gpt-4o');
         const agentLoop = new AgentLoop(
           inference, toolExecutor, memory, soul, logger,
           { defaultModel },
+          conversationService,
         );
 
-        return { stateMachine, toolExecutor, agentLoop, taskQueue };
+        return { stateMachine, toolExecutor, agentLoop, taskQueue, conversationService };
       });
 
       logger.info('Automaton ready', {
@@ -237,6 +251,7 @@ export class Kernel {
           agentLoop: automaton.agentLoop,
           toolExecutor: automaton.toolExecutor,
           skills, memory, db,
+          conversationService: automaton.conversationService,
         });
       });
 
