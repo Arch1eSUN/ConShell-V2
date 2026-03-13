@@ -23,7 +23,21 @@ export function checkEnvironment(projectRoot: string): CheckResult[] {
     evidenceType: 'runtime-probe',
   });
 
-  // E2: .nvmrc presence
+  // E2: Node ABI (informational — probe determines actual native compat)
+  const abi = process.versions.modules;
+  results.push({
+    id: 'env-node-abi',
+    label: 'Node.js ABI Version',
+    category: 'env',
+    severity: 'info',
+    status: 'pass',
+    summary: `ABI ${abi}. Native modules must be compiled against this ABI to load. Actual usability is determined by the deps probe, not this number alone.`,
+    evidence: `process.versions.modules = ${abi}`,
+    confidence: 'high',
+    evidenceType: 'runtime-probe',
+  });
+
+  // E3: .nvmrc presence
   const nvmrcExists = existsSync(join(projectRoot, '.nvmrc'));
   const nodeVersionExists = existsSync(join(projectRoot, '.node-version'));
   results.push({

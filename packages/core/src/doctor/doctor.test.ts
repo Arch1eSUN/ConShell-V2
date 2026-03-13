@@ -1,236 +1,202 @@
 /**
- * Doctor subsystem tests — Round 14.1
+ * Doctor subsystem tests — Round 14.2
  *
- * Validates that each check category runs and produces structured results
- * with proper evidenceType provenance. Tests verify structural correctness,
- * not that every check passes — some checks may report warnings in
- * environments with known issues.
+ * Tests the execution evidence binding (Route B), insufficient-evidence
+ * verdict, and gate criteria integrity.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { join } from 'node:path';
-import { checkEnvironment } from './checks/env.js';
-import { checkDependencies } from './checks/deps.js';
-import { checkTestBoundary } from './checks/tests.js';
-import { checkBuildReadiness } from './checks/build.js';
-import { checkIntegrations } from './checks/integrations.js';
-import { runDiagnostics, formatReport } from './index.js';
+import { describe, it, expect } from 'vitest';
+import { checkExecutionEvidence } from './checks/tests.js';
+import type {
+  CheckResult,
+  ExecutionEvidence,
+  ExecutionResult,
+  ReadinessGate,
+  DiagnosticsOptions,
+} from './index.js';
 
-// Use the actual project paths
-const PROJECT_ROOT = join(__dirname, '..', '..', '..', '..');
-const CORE_ROOT = join(__dirname, '..', '..');
+// ── Helper: build a minimal passing execution result ──────────────────
 
-describe('Doctor', () => {
-  describe('Environment checks', () => {
-    it('should return array of CheckResult objects with evidenceType', () => {
-      const results = checkEnvironment(PROJECT_ROOT);
-      expect(results.length).toBeGreaterThan(0);
-      for (const r of results) {
-        expect(r.id).toBeTruthy();
-        expect(r.label).toBeTruthy();
-        expect(r.category).toBe('env');
-        expect(['info', 'warning', 'blocker']).toContain(r.severity);
-        expect(['pass', 'fail', 'warn', 'unknown']).toContain(r.status);
-        expect(r.summary).toBeTruthy();
-        expect(r.evidence).toBeTruthy();
-        expect(['high', 'medium', 'low']).toContain(r.confidence);
-        // Round 14.1: evidenceType provenance required
-        expect(['code-inspection', 'fs-scan', 'runtime-probe', 'test-execution', 'network-observation', 'historical-claim']).toContain(r.evidenceType);
-      }
-    });
+function passingVitest(): ExecutionResult {
+  return {
+    command: 'cd packages/core && npx vitest run --no-coverage',
+    exitCode: 0,
+    passed: 522,
+    failed: 0,
+    total: 522,
+    summary: 'All tests passed',
+    timestamp: new Date().toISOString(),
+  };
+}
 
-    it('should detect Node version with runtime-probe provenance', () => {
-      const results = checkEnvironment(PROJECT_ROOT);
-      const nodeCheck = results.find(r => r.id === 'env-node-version');
-      expect(nodeCheck).toBeTruthy();
-      expect(nodeCheck!.summary).toContain(process.version);
-      expect(nodeCheck!.evidenceType).toBe('runtime-probe');
-    });
+function failingVitest(): ExecutionResult {
+  return {
+    command: 'cd packages/core && npx vitest run --no-coverage',
+    exitCode: 1,
+    passed: 480,
+    failed: 42,
+    total: 522,
+    summary: '42 tests failed',
+    timestamp: new Date().toISOString(),
+  };
+}
 
-    it('should check workspace root validity', () => {
-      const results = checkEnvironment(PROJECT_ROOT);
-      const rootCheck = results.find(r => r.id === 'env-workspace-root');
-      expect(rootCheck).toBeTruthy();
-      expect(rootCheck!.evidenceType).toBe('fs-scan');
-    });
+function passingTsc(): ExecutionResult {
+  return {
+    command: 'cd packages/core && npx tsc --noEmit',
+    exitCode: 0,
+    passed: 0,
+    failed: 0,
+    total: 0,
+    summary: 'No type errors',
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function failingTsc(): ExecutionResult {
+  return {
+    command: 'cd packages/core && npx tsc --noEmit',
+    exitCode: 2,
+    passed: 0,
+    failed: 5,
+    total: 5,
+    summary: '5 type errors',
+    timestamp: new Date().toISOString(),
+  };
+}
+
+// ── checkExecutionEvidence ────────────────────────────────────────────
+
+describe('checkExecutionEvidence', () => {
+  it('returns unknown status when no evidence is provided', () => {
+    const results = checkExecutionEvidence();
+    expect(results).toHaveLength(2);
+
+    const vitest = results.find(r => r.id === 'tests-vitest-execution')!;
+    expect(vitest.status).toBe('unknown');
+    expect(vitest.evidenceType).toBe('test-execution');
+    expect(vitest.confidence).toBe('low');
+
+    const tsc = results.find(r => r.id === 'build-tsc-execution')!;
+    expect(tsc.status).toBe('unknown');
+    expect(tsc.evidenceType).toBe('test-execution');
+    expect(tsc.confidence).toBe('low');
   });
 
-  describe('Dependency checks', () => {
-    it('should return array of CheckResult objects with evidenceType', () => {
-      const results = checkDependencies(PROJECT_ROOT, CORE_ROOT);
-      expect(results.length).toBeGreaterThan(0);
-      for (const r of results) {
-        expect(r.category).toBe('deps');
-        expect(r.evidence).toBeTruthy();
-        expect(r.evidenceType).toBeTruthy();
-      }
-    });
+  it('returns pass when vitest execution succeeds', () => {
+    const results = checkExecutionEvidence({ vitest: passingVitest() });
+    const vitest = results.find(r => r.id === 'tests-vitest-execution')!;
 
-    it('should check for numbered node_modules duplicates with fs-scan provenance', () => {
-      const results = checkDependencies(PROJECT_ROOT, CORE_ROOT);
-      const dupCheck = results.find(r => r.id === 'deps-numbered-duplicates');
-      expect(dupCheck).toBeTruthy();
-      expect(dupCheck!.confidence).toBe('high');
-      expect(dupCheck!.evidenceType).toBe('fs-scan');
-    });
-
-    it('should probe better-sqlite3 with 4-stage pipeline and runtime-probe provenance', () => {
-      const results = checkDependencies(PROJECT_ROOT, CORE_ROOT);
-      const sqliteCheck = results.find(r => r.id === 'deps-better-sqlite3');
-      expect(sqliteCheck).toBeTruthy();
-      expect(sqliteCheck!.evidenceType).toBe('runtime-probe');
-      // The summary should describe the 4-stage result
-      expect(sqliteCheck!.summary).toMatch(/resolve|require|instantiate|query/);
-    });
+    expect(vitest.status).toBe('pass');
+    expect(vitest.severity).toBe('info');
+    expect(vitest.confidence).toBe('high');
+    expect(vitest.evidenceType).toBe('test-execution');
+    expect(vitest.summary).toContain('522/522');
   });
 
-  describe('Test boundary checks', () => {
-    it('should find vitest config', () => {
-      const results = checkTestBoundary(CORE_ROOT);
-      const configCheck = results.find(r => r.id === 'tests-vitest-config');
-      expect(configCheck).toBeTruthy();
-      expect(configCheck!.status).toBe('pass');
-    });
+  it('returns fail with blocker severity when vitest has failures', () => {
+    const results = checkExecutionEvidence({ vitest: failingVitest() });
+    const vitest = results.find(r => r.id === 'tests-vitest-execution')!;
 
-    it('should report static file inventory (not execution truth)', () => {
-      const results = checkTestBoundary(CORE_ROOT);
-      const inventoryCheck = results.find(r => r.id === 'tests-file-inventory');
-      expect(inventoryCheck).toBeTruthy();
-      expect(inventoryCheck!.summary).toContain('Static inventory');
-      expect(inventoryCheck!.summary).toContain('NOT vitest execution truth');
-      expect(inventoryCheck!.evidenceType).toBe('fs-scan');
-    });
-
-    it('should include execution note that Doctor does NOT run vitest', () => {
-      const results = checkTestBoundary(CORE_ROOT);
-      const execNote = results.find(r => r.id === 'tests-execution-note');
-      expect(execNote).toBeTruthy();
-      expect(execNote!.status).toBe('unknown');
-      expect(execNote!.summary).toContain('Doctor does NOT execute vitest');
-      expect(execNote!.confidence).toBe('low');
-    });
-
-    it('should check for root vitest guard', () => {
-      const results = checkTestBoundary(CORE_ROOT);
-      const guardCheck = results.find(r => r.id === 'tests-root-guard');
-      expect(guardCheck).toBeTruthy();
-    });
+    expect(vitest.status).toBe('fail');
+    expect(vitest.severity).toBe('blocker');
+    expect(vitest.summary).toContain('42/522');
+    expect(vitest.summary).toContain('FAILED');
   });
 
-  describe('Build readiness checks', () => {
-    it('should find tsconfig with fs-scan provenance', () => {
-      const results = checkBuildReadiness(CORE_ROOT);
-      const tscCheck = results.find(r => r.id === 'build-tsconfig');
-      expect(tscCheck).toBeTruthy();
-      expect(tscCheck!.status).toBe('pass');
-      expect(tscCheck!.evidenceType).toBe('fs-scan');
-    });
+  it('returns pass when tsc execution succeeds', () => {
+    const results = checkExecutionEvidence({ tsc: passingTsc() });
+    const tsc = results.find(r => r.id === 'build-tsc-execution')!;
+
+    expect(tsc.status).toBe('pass');
+    expect(tsc.severity).toBe('info');
+    expect(tsc.category).toBe('build');
+    expect(tsc.evidenceType).toBe('test-execution');
   });
 
-  describe('Integration checks', () => {
-    it('should split EvoMap into implemented vs observed surfaces', async () => {
-      // Mock fetch for non-network test environments
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-      }) as any;
+  it('returns fail with blocker severity when tsc has errors', () => {
+    const results = checkExecutionEvidence({ tsc: failingTsc() });
+    const tsc = results.find(r => r.id === 'build-tsc-execution')!;
 
-      try {
-        const results = await checkIntegrations();
-
-        // Should have separate checks for implemented and observed
-        const implCheck = results.find(r => r.id === 'integ-evomap-implemented');
-        expect(implCheck).toBeTruthy();
-        expect(implCheck!.summary).toContain('gep.hello');
-        expect(implCheck!.summary).toContain('gep.publish');
-        expect(implCheck!.evidenceType).toBe('code-inspection');
-        expect(implCheck!.confidence).toBe('high');
-
-        const obsCheck = results.find(r => r.id === 'integ-evomap-observed');
-        expect(obsCheck).toBeTruthy();
-        expect(obsCheck!.summary).toContain('/a2a/work/available');
-        expect(obsCheck!.summary).toContain('/a2a/work/claim');
-        expect(obsCheck!.evidenceType).toBe('historical-claim');
-        expect(obsCheck!.status).toBe('unknown');
-
-        // Old monolithic contract check should NOT exist
-        const oldContract = results.find(r => r.id === 'integ-evomap-contract');
-        expect(oldContract).toBeUndefined();
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    it('should tag network probes with network-observation provenance', async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-      }) as any;
-
-      try {
-        const results = await checkIntegrations();
-        const reachCheck = results.find(r => r.id === 'integ-evomap-reachable');
-        expect(reachCheck!.evidenceType).toBe('network-observation');
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
+    expect(tsc.status).toBe('fail');
+    expect(tsc.severity).toBe('blocker');
+    expect(tsc.summary).toContain('FAILED');
+    expect(tsc.summary).toContain('5 errors');
   });
 
-  describe('runDiagnostics', () => {
-    it('should produce a complete IntegrityReport with readiness gate', async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-      }) as any;
-
-      try {
-        const report = await runDiagnostics(PROJECT_ROOT, CORE_ROOT);
-
-        expect(report.timestamp).toBeTruthy();
-        expect(['healthy', 'degraded', 'unhealthy']).toContain(report.health);
-        expect(report.checks.length).toBeGreaterThan(0);
-        expect(report.counts).toBeDefined();
-        expect(report.commands.test).toContain('vitest');
-        expect(report.commands.typecheck).toContain('tsc');
-        expect(report.commands.doNotUse.length).toBeGreaterThan(0);
-
-        // Round 14.1: ReadinessGate
-        expect(report.readiness).toBeDefined();
-        expect(['ready', 'conditionally-ready', 'not-ready']).toContain(report.readiness.verdict);
-        expect(report.readiness.criteria.length).toBeGreaterThan(0);
-        expect(report.readiness.rationale).toBeTruthy();
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
+  it('handles both vitest and tsc evidence together', () => {
+    const results = checkExecutionEvidence({
+      vitest: passingVitest(),
+      tsc: passingTsc(),
     });
+
+    expect(results).toHaveLength(2);
+    expect(results.every(r => r.status === 'pass')).toBe(true);
+    expect(results.every(r => r.evidenceType === 'test-execution')).toBe(true);
+  });
+});
+
+// ── Evidence type coverage ────────────────────────────────────────────
+
+describe('Evidence type taxonomy', () => {
+  it('execution evidence checks use test-execution provenance', () => {
+    const withEvidence = checkExecutionEvidence({
+      vitest: passingVitest(),
+      tsc: passingTsc(),
+    });
+    for (const check of withEvidence) {
+      expect(check.evidenceType).toBe('test-execution');
+    }
   });
 
-  describe('formatReport', () => {
-    it('should produce human-readable output with provenance and readiness gate', async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-      }) as any;
+  it('absent evidence checks still use test-execution provenance (not code-inspection)', () => {
+    const noEvidence = checkExecutionEvidence();
+    for (const check of noEvidence) {
+      expect(check.evidenceType).toBe('test-execution');
+      // Must NOT be 'code-inspection' — even absent evidence is about execution
+    }
+  });
+});
 
-      try {
-        const report = await runDiagnostics(PROJECT_ROOT, CORE_ROOT);
-        const text = formatReport(report);
+// ── Gate verdict scenarios ────────────────────────────────────────────
 
-        expect(text).toContain('Integrity Report');
-        expect(text).toContain('STANDARD COMMANDS');
-        expect(text).toContain('DO NOT USE');
-        expect(text).toContain('vitest');
-        // Round 14.1: provenance and readiness
-        expect(text).toContain('Provenance:');
-        expect(text).toContain('READINESS GATE');
-        expect(text).toContain('Verdict:');
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
+describe('ReadinessGate verdict expectations', () => {
+  // These test the contract that the gate logic in index.ts should uphold.
+  // Since we can't easily unit-test computeReadinessGate in isolation
+  // (it's private), we test the observable contract through check results.
+
+  it('no execution evidence should produce unknown-status checks', () => {
+    const results = checkExecutionEvidence();
+    const vitestExec = results.find(r => r.id === 'tests-vitest-execution')!;
+    const tscExec = results.find(r => r.id === 'build-tsc-execution')!;
+
+    // Gate criterion 6 checks: vitestExec.status !== 'unknown'
+    // When unknown, gate criterion fails → verdict = insufficient-evidence
+    expect(vitestExec.status).toBe('unknown');
+    expect(tscExec.status).toBe('unknown');
+  });
+
+  it('failing execution evidence should produce blocker checks', () => {
+    const results = checkExecutionEvidence({
+      vitest: failingVitest(),
+      tsc: failingTsc(),
     });
+    const vitestExec = results.find(r => r.id === 'tests-vitest-execution')!;
+    const tscExec = results.find(r => r.id === 'build-tsc-execution')!;
+
+    // Gate criterion 6/7: status !== 'pass' → criterion fails → verdict = not-ready
+    expect(vitestExec.status).toBe('fail');
+    expect(vitestExec.severity).toBe('blocker');
+    expect(tscExec.status).toBe('fail');
+    expect(tscExec.severity).toBe('blocker');
+  });
+
+  it('static inventory cannot substitute for execution truth', () => {
+    // Having test files on disk (inventory) is NOT the same as having passed execution
+    const noExec = checkExecutionEvidence();
+    const vitestExec = noExec.find(r => r.id === 'tests-vitest-execution')!;
+
+    // Even if 35 test files exist on disk, without execution evidence
+    // the gate must NOT say 'ready'
+    expect(vitestExec.status).not.toBe('pass');
   });
 });

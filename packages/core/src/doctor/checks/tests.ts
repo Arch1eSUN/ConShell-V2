@@ -4,10 +4,14 @@
  * Round 14.1: Relabeled "file count" as "static inventory" and added
  * an explicit execution-note check to distinguish inventory from
  * actual vitest execution truth.
+ *
+ * Round 14.2: Added checkExecutionEvidence() for Route B external
+ * execution results. Produces tests-vitest-execution and
+ * build-tsc-execution checks from caller-provided evidence.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import type { CheckResult } from '../index.js';
+import type { CheckResult, ExecutionEvidence } from '../index.js';
 
 /**
  * Recursively find all *.test.ts files under a directory.
@@ -87,8 +91,6 @@ export function checkTestBoundary(coreRoot: string): CheckResult[] {
   });
 
   // T3: Execution boundary note
-  // This check does NOT run vitest — it documents the trusted command
-  // and what must be verified externally.
   results.push({
     id: 'tests-execution-note',
     label: 'Test Execution Truth (Not Verified Here)',
@@ -143,3 +145,83 @@ export function checkTestBoundary(coreRoot: string): CheckResult[] {
 
   return results;
 }
+
+/**
+ * Produce check results from externally-provided execution evidence (Route B).
+ *
+ * When evidence is absent, checks report 'unknown' status which signals
+ * to the ReadinessGate that execution truth is missing. The gate will
+ * then degrade its verdict to 'insufficient-evidence'.
+ *
+ * When evidence is present, checks use 'test-execution' evidenceType
+ * and report pass/fail based on the structured results.
+ */
+export function checkExecutionEvidence(evidence?: ExecutionEvidence): CheckResult[] {
+  const results: CheckResult[] = [];
+
+  // EX1: Vitest execution
+  if (evidence?.vitest) {
+    const v = evidence.vitest;
+    const passed = v.exitCode === 0 && v.failed === 0;
+    results.push({
+      id: 'tests-vitest-execution',
+      label: 'Vitest Execution Result',
+      category: 'tests',
+      severity: passed ? 'info' : 'blocker',
+      status: passed ? 'pass' : 'fail',
+      summary: passed
+        ? `${v.passed}/${v.total} tests passed (exit ${v.exitCode}). ${v.summary}`
+        : `${v.failed}/${v.total} tests FAILED (exit ${v.exitCode}). ${v.summary}`,
+      evidence: `Command: ${v.command} | Exit: ${v.exitCode} | Passed: ${v.passed} | Failed: ${v.failed} | Total: ${v.total} | At: ${v.timestamp}`,
+      confidence: 'high',
+      evidenceType: 'test-execution',
+    });
+  } else {
+    results.push({
+      id: 'tests-vitest-execution',
+      label: 'Vitest Execution Result',
+      category: 'tests',
+      severity: 'info',
+      status: 'unknown',
+      summary: 'No vitest execution evidence provided. Run vitest externally and pass results to Doctor.',
+      evidence: 'No ExecutionEvidence.vitest supplied to runDiagnostics()',
+      confidence: 'low',
+      evidenceType: 'test-execution',
+    });
+  }
+
+  // EX2: TypeScript typecheck execution
+  if (evidence?.tsc) {
+    const t = evidence.tsc;
+    const passed = t.exitCode === 0 && t.failed === 0;
+    results.push({
+      id: 'build-tsc-execution',
+      label: 'TypeScript Typecheck Result',
+      category: 'build',
+      severity: passed ? 'info' : 'blocker',
+      status: passed ? 'pass' : 'fail',
+      summary: passed
+        ? `tsc --noEmit passed (0 errors). ${t.summary}`
+        : `tsc --noEmit FAILED (${t.failed} errors, exit ${t.exitCode}). ${t.summary}`,
+      evidence: `Command: ${t.command} | Exit: ${t.exitCode} | Errors: ${t.failed} | At: ${t.timestamp}`,
+      confidence: 'high',
+      evidenceType: 'test-execution',
+    });
+  } else {
+    results.push({
+      id: 'build-tsc-execution',
+      label: 'TypeScript Typecheck Result',
+      category: 'build',
+      severity: 'info',
+      status: 'unknown',
+      summary: 'No tsc execution evidence provided. Run tsc --noEmit externally and pass results to Doctor.',
+      evidence: 'No ExecutionEvidence.tsc supplied to runDiagnostics()',
+      confidence: 'low',
+      evidenceType: 'test-execution',
+    });
+  }
+
+  return results;
+}
+
+
