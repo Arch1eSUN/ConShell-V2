@@ -13,7 +13,7 @@
  *   - 不复制 transport 逻辑
  */
 import type { WebSocketServer } from '../../server/websocket.js';
-import type { ChannelManager, OutboundMessage, StreamChunk } from '../index.js';
+import type { ChannelManager, OutboundMessage, StreamChunk, StatusEvent } from '../index.js';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -37,6 +37,8 @@ export class WebChatPushBridge {
   private outboundHandler: ((msg: OutboundMessage) => void) | null = null;
   /** chunk event handler reference (for cleanup) */
   private chunkHandler: ((chunk: StreamChunk) => void) | null = null;
+  /** status event handler reference (for cleanup) */
+  private statusHandler: ((evt: StatusEvent) => void) | null = null;
 
   private started = false;
 
@@ -135,6 +137,22 @@ export class WebChatPushBridge {
     };
 
     this.channelManager.on('message:chunk', this.chunkHandler);
+
+    // Bridge status events to WebSocket push
+    this.statusHandler = (evt: StatusEvent) => {
+      if (evt.platform !== 'webchat') return;
+      if (!evt.to) return;
+
+      this.pushToSession(evt.to, {
+        type: 'status',
+        data: {
+          sessionId: evt.to,
+          status: evt.status,
+        },
+      });
+    };
+
+    this.channelManager.on('message:status', this.statusHandler);
   }
 
   stop(): void {
@@ -148,6 +166,10 @@ export class WebChatPushBridge {
     if (this.chunkHandler) {
       this.channelManager.off('message:chunk', this.chunkHandler);
       this.chunkHandler = null;
+    }
+    if (this.statusHandler) {
+      this.channelManager.off('message:status', this.statusHandler);
+      this.statusHandler = null;
     }
 
     this.sessions.clear();

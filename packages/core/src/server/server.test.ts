@@ -290,24 +290,25 @@ describe('WebChat HTTP Route — POST /api/webchat/message', () => {
 
   // ── 7. 504: timeout ──
 
-  it('should return 504 when transport times out', async () => {
-    // Gateway with no handlers → no reply → timeout
+  it('should return 200 with empty reply when no handler matches', async () => {
+    // Gateway with no handlers → sends empty outbound → HTTP completes
     const gateway = new Gateway({
       channels: [{ platform: 'webchat', enabled: true }],
     });
     await gateway.start();
-    const transport = new WebChatTransport(gateway.getManager(), { timeoutMs: 200 });
+    const transport = new WebChatTransport(gateway.getManager(), { timeoutMs: 2000 });
 
     server = new HttpServer(silentLogger, { port });
     registerWebChatRoutes(server, transport, silentLogger);
     await server.start();
 
     const { status, json } = await postWebChat({
-      sessionId: 'timeout-session',
-      message: 'will timeout',
+      sessionId: 'no-handler-session',
+      message: 'no handler',
     });
-    expect(status).toBe(504);
-    expect(json.code).toBe('GATEWAY_TIMEOUT');
+    // Protocol hardening: no timeout — Gateway always sends outbound
+    expect(status).toBe(200);
+    expect(json.reply).toBe('');
 
     await gateway.stop();
   });

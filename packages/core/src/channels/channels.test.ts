@@ -406,12 +406,11 @@ describe('Gateway', () => {
     await gw.stop();
   });
 
-  // ── Inference Streaming Integration ─────────────────────
+  // ── Streaming Protocol Hardening Tests ────────────────────
 
-  it('streams real inference chunks through Gateway', async () => {
-    // Build a mock InferenceRouter that yields real text chunks
-    const mockInferenceRouter = {
-      async *chat() {
+  it('streaming: no empty chunks, last content chunk is final, outbound once', async () => {
+    const mockRouter = {
+      async *chatStreaming() {
         yield { type: 'text' as const, text: 'Hello' };
         yield { type: 'text' as const, text: ' World' };
         yield { type: 'done' as const };
@@ -420,62 +419,15 @@ describe('Gateway', () => {
 
     const gw = new Gateway({
       channels: [{ platform: 'webchat', enabled: true }],
-      inferenceRouter: mockInferenceRouter as any,
+      inferenceRouter: mockRouter as any,
       defaultModel: 'test-model',
     });
 
     await gw.start();
 
-    // Collect chunk events
     const chunks: Array<{ content: string; index: number; final: boolean }> = [];
     gw.getManager().on('message:chunk', (chunk) => {
       chunks.push({ content: chunk.content, index: chunk.index, final: chunk.final });
-    });
-
-    // Collect outbound messages
-    const outbound: string[] = [];
-    gw.getManager().on('message:outbound', (msg) => {
-      outbound.push(msg.content);
-    });
-
-    // Inject a webchat message — triggers routeWithInference
-    const adapter = gw.getManager().getWebChat()!;
-    adapter.injectMessage('user1', 'tell me something');
-
-    // Allow async processing
-    await new Promise(r => setTimeout(r, 50));
-
-    // Verify chunks arrived in order
-    expect(chunks.length).toBeGreaterThanOrEqual(2);
-    expect(chunks[0]).toEqual({ content: 'Hello', index: 0, final: false });
-    expect(chunks[1]).toEqual({ content: ' World', index: 1, final: false });
-    // Final chunk marker
-    const finalChunk = chunks.find(c => c.final);
-    expect(finalChunk).toBeDefined();
-    expect(finalChunk!.index).toBe(2);
-
-    // Verify complete outbound message
-    expect(outbound).toContain('Hello World');
-
-    await gw.stop();
-  });
-
-  it('falls back to synthetic single chunk when no inference router', async () => {
-    const gw = new Gateway({
-      channels: [{ platform: 'webchat', enabled: true }],
-      // No inferenceRouter — will use fallback
-    });
-
-    // Register a simple route handler
-    gw.route({
-      handler: async () => 'fallback reply',
-    });
-
-    await gw.start();
-
-    const chunks: Array<{ content: string; final: boolean }> = [];
-    gw.getManager().on('message:chunk', (chunk) => {
-      chunks.push({ content: chunk.content, final: chunk.final });
     });
 
     const outbound: string[] = [];
@@ -485,23 +437,62 @@ describe('Gateway', () => {
 
     const adapter = gw.getManager().getWebChat()!;
     adapter.injectMessage('user1', 'hello');
-
     await new Promise(r => setTimeout(r, 50));
 
-    // Fallback: single synthetic chunk (not word-split mock)
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toEqual({ content: 'fallback reply', final: true });
-    expect(outbound).toContain('fallback reply');
+    // No empty chunks exist
+    expect(chunks.every(c => c.content.length > 0)).toBe(true);
+
+    // Last content chunk is final=true, all others final=false
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]).toEqual({ content: 'Hello', index: 0, final: false });
+    expect(chunks[1]).toEqual({ content: ' World', index: 1, final: true });
+
+    // Outbound fires exactly once with complete text
+    expect(outbound).toEqual(['Hello World']);
 
     await gw.stop();
   });
 
-  it('falls back to route handler when inference fails', async () => {
-    // Inference router that always throws
+  it('streaming: zero-text completion sends outbound, no timeout, no chunks', async () => {
+    const mockRouter = {
+      async *chatStreaming() {
+        // Provider returns only usage/done — no text
+        yield { type: 'usage' as const, usage: { inputTokens: 5, outputTokens: 0, cost: { amount: 0, currency: '' } } };
+        yield { type: 'done' as const };
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: mockRouter as any,
+    });
+
+    await gw.start();
+
+    const chunks: any[] = [];
+    gw.getManager().on('message:chunk', (chunk) => chunks.push(chunk));
+
+    const outbound: string[] = [];
+    gw.getManager().on('message:outbound', (msg) => outbound.push(msg.content));
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'no text');
+    await new Promise(r => setTimeout(r, 50));
+
+    // No chunks emitted (zero-text)
+    expect(chunks).toHaveLength(0);
+
+    // Outbound still fires with empty content (HTTP doesn't hang)
+    expect(outbound).toEqual(['']);
+
+    await gw.stop();
+  });
+
+  it('streaming: mid-stream failure does not silently stitch fallback', async () => {
     const failingRouter = {
-      async *chat() {
-        throw new Error('inference provider unreachable');
-        yield; // make it a generator
+      async *chatStreaming() {
+        yield { type: 'text' as const, text: 'partial' };
+        throw new Error('connection reset');
       },
     };
 
@@ -523,20 +514,144 @@ describe('Gateway', () => {
     });
 
     const outbound: string[] = [];
-    gw.getManager().on('message:outbound', (msg) => {
-      outbound.push(msg.content);
-    });
+    gw.getManager().on('message:outbound', (msg) => outbound.push(msg.content));
 
     const adapter = gw.getManager().getWebChat()!;
     adapter.injectMessage('user1', 'test');
-
     await new Promise(r => setTimeout(r, 50));
 
-    // Should have fallen back to route handler
+    // Mid-stream error: chatStreaming throws, Gateway catches and does fallback
+    // Fallback handler produces clean output (no mix of partial + fallback)
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0]).toBe('emergency fallback');
+
+    // The fallback chunk should be clean
+    const fallbackChunk = chunks.find(c => c.content === 'emergency fallback');
+    expect(fallbackChunk).toBeDefined();
+
+    await gw.stop();
+  });
+
+  it('streaming: pre-token failure allows clean fallback', async () => {
+    const failingRouter = {
+      async *chatStreaming() {
+        // Fails before any text yields
+        throw new Error('inference provider unreachable');
+        yield; // make it a generator
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: failingRouter as any,
+    });
+
+    gw.route({
+      handler: async () => 'recovered via fallback',
+    });
+
+    await gw.start();
+
+    const outbound: string[] = [];
+    gw.getManager().on('message:outbound', (msg) => outbound.push(msg.content));
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'hello');
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(outbound).toEqual(['recovered via fallback']);
+
+    await gw.stop();
+  });
+
+  it('streaming: status lifecycle processing → completed', async () => {
+    const mockRouter = {
+      async *chatStreaming() {
+        yield { type: 'text' as const, text: 'ok' };
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: mockRouter as any,
+    });
+
+    await gw.start();
+
+    const statuses: string[] = [];
+    gw.getManager().on('message:status', (evt) => statuses.push(evt.status));
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'hello');
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(statuses).toEqual(['processing', 'completed']);
+
+    await gw.stop();
+  });
+
+  it('streaming: status lifecycle processing → completed on no-handler fallback', async () => {
+    const failingRouter = {
+      async *chatStreaming() {
+        throw new Error('dead');
+        yield;
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: failingRouter as any,
+    });
+
+    // No route handlers — falls through to empty outbound
+    await gw.start();
+
+    const statuses: string[] = [];
+    gw.getManager().on('message:status', (evt) => statuses.push(evt.status));
+
+    const outbound: string[] = [];
+    gw.getManager().on('message:outbound', (msg) => outbound.push(msg.content));
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'hello');
+    await new Promise(r => setTimeout(r, 50));
+
+    // Empty outbound is still a valid completion
+    expect(statuses).toEqual(['processing', 'completed']);
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0]).toBe('');
+
+    await gw.stop();
+  });
+
+  it('streaming: fallback without inference router sends outbound exactly once', async () => {
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+    });
+
+    gw.route({
+      handler: async () => 'fallback reply',
+    });
+
+    await gw.start();
+
+    const chunks: Array<{ content: string; final: boolean }> = [];
+    gw.getManager().on('message:chunk', (chunk) => {
+      chunks.push({ content: chunk.content, final: chunk.final });
+    });
+
+    const outbound: string[] = [];
+    gw.getManager().on('message:outbound', (msg) => outbound.push(msg.content));
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'hello');
+    await new Promise(r => setTimeout(r, 50));
+
     expect(chunks).toHaveLength(1);
-    expect(chunks[0].content).toBe('emergency fallback');
-    expect(outbound).toContain('emergency fallback');
+    expect(chunks[0]).toEqual({ content: 'fallback reply', final: true });
+    expect(outbound).toEqual(['fallback reply']);
 
     await gw.stop();
   });
 });
+

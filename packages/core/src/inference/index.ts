@@ -148,6 +148,63 @@ export class InferenceRouter {
   }
 
   /**
+   * 流式聊天（安全模式）— 用于面向用户的 streaming path
+   *
+   * 与 chat() 的区别：
+   * - 首个 text chunk 之前: 允许 failover 到备用 provider
+   * - 首个 text chunk 之后: 禁止 mid-stream failover，直接 throw
+   *   （避免把坏前缀 + fallback 输出拼成用户可见结果）
+   */
+  async *chatStreaming(messages: Message[], options: ChatOptions): AsyncIterable<StreamChunk> {
+    const provider = this.selectProvider();
+    this._requestCount++;
+    this.logger.debug('ChatStreaming request', { provider: provider.id, model: options.model });
+
+    let hasYieldedText = false;
+
+    try {
+      for await (const chunk of provider.chat(messages, options)) {
+        if (chunk.type === 'usage' && chunk.usage) {
+          this._totalInputTokens += chunk.usage.inputTokens;
+          this._totalOutputTokens += chunk.usage.outputTokens;
+          this._totalCost = addCents(this._totalCost, chunk.usage.cost);
+        }
+        if (chunk.type === 'text' && chunk.text) {
+          hasYieldedText = true;
+        }
+        yield chunk;
+      }
+    } catch (err) {
+      if (hasYieldedText) {
+        // Already sent text to user — cannot silently stitch fallback output
+        this.logger.error('Mid-stream failure after text yield — no fallback allowed', {
+          provider: provider.id,
+          error: String(err),
+        });
+        throw err;
+      }
+
+      // Pre-first-token failure — allow failover
+      this.logger.warn('Pre-token failure, attempting failover', {
+        provider: provider.id,
+        error: String(err),
+      });
+      const fallbackProvider = this.findFallback(provider.id);
+      if (!fallbackProvider) throw err;
+
+      this.logger.info('Failover to', { provider: fallbackProvider.id });
+      for await (const chunk of fallbackProvider.chat(messages, options)) {
+        if (chunk.type === 'usage' && chunk.usage) {
+          this._totalInputTokens += chunk.usage.inputTokens;
+          this._totalOutputTokens += chunk.usage.outputTokens;
+          this._totalCost = addCents(this._totalCost, chunk.usage.cost);
+        }
+        yield chunk;
+      }
+    }
+  }
+
+  /**
    * 非流式聊天 — 收集完整响应
    */
   async chatComplete(messages: Message[], options: ChatOptions): Promise<{

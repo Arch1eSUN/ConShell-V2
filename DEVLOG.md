@@ -1,6 +1,6 @@
 # 🐢 ConShell V2 — 开发日志 (DEVLOG)
 
-> **最后更新**: 2026-03-13
+> **最后更新**: 2026-03-13 (Round 8)
 > **用途**: 提供给 LLM (GPT/Claude) 快速理解项目全貌，生成下一步开发计划。
 
 ---
@@ -15,7 +15,7 @@
 
 - **语言**: TypeScript（strict mode）
 - **包管理**: pnpm monorepo
-- **测试**: vitest（28 个测试文件，417 个测试用例）
+- **测试**: vitest（28 个测试文件，429 个测试用例）
 - **构建**: tsc
 - **CI**: GitHub Actions
 
@@ -109,77 +109,99 @@ ConShellV2/
 
 ---
 
-### Round 7 (最新): Token-Level Streaming + Wiring 技术债清理
+### Round 7: Token-Level Streaming + Wiring 技术债清理
 
-> **Commit**: 尚未提交（即将 push）
 > **日期**: 2026-03-13
 
-**目标**: 在 message 级推送基础上，实现 token 级 streaming；并清理 Round 6 遗留的类型安全问题。
+**目标**: 实现 token 级 streaming；清理 Round 6 遗留的类型安全问题。
 
-#### 7a — Wiring 技术债清理
+- `WebChatTransport.channelManager` 只读 getter — 消除 `as any`
+- `StreamChunk` 类型 + `message:chunk` 事件 + `emitChunk()` 方法
+- `WebChatPushBridge` 监听 `message:chunk` → WS `type: "chunk"` 帧
+- `Gateway.routeStreamingMessage()` — 模拟分词 streaming 路径
+- 5 个新增 streaming push 测试
 
-**问题**: `server-init.ts` 中使用了 `as any` 暴力访问 `WebChatTransport` 的私有属性：
+---
+
+### Round 8 (最新): Streaming Protocol Hardening 流式协议加固
+
+> **日期**: 2026-03-13
+
+**目标**: 在不破坏 HTTP + WS 双闭环的前提下，把 streaming 路径修成协议一致、失败语义明确的稳定实现。
+
+#### 8a — InferenceRouter.chatStreaming()
+
+新增专用 streaming 方法，实施严格的 failover 策略：
+
+- **Pre-token 失败** → 允许 fallback 到备选 provider（与 `chat()` 行为一致）
+- **Post-token 失败** → 直接抛出错误，**不静默拼接**另一个 provider 的输出
+- 通过 `textYielded` 标记追踪 failover 窗口
+
+#### 8b — Gateway 协议收口
+
+`routeStreamingMessage()` / `routeWithInference()` / `routeFallback()` 全部重写：
+
+**Chunk 规则**:
+- `chunk.content` 必须非空 — 不再有空 final chunk 标记
+- 最后一个 content chunk 的 `final=true`，其余 `final=false`
+- `chunk.index` 严格递增
+
+**Outbound 规则**:
+- 无条件发送 — 即使是 zero-text completion，也发空 content outbound
+- HTTP 请求永不超时（消除 504 gateway timeout）
+- `sendSafe()` 保障函数 — outbound 发送被 try/catch 包裹
+
+**Status Lifecycle**:
+- `processing` — stream 开始
+- `completed` — outbound 发送成功
+- `failed` — sendSafe 本身失败（极少情况）
+
+#### 8c — StatusEvent + emitStatus()
+
+`ChannelManager` 新增：
 ```typescript
-// BEFORE (Round 6 遗留)
-const pushBridge = new WebChatPushBridge(wsServer, (deps.webChatTransport as any).channelManager ?? null);
-```
-
-**修复**:
-- `WebChatTransport` 新增 `get channelManager` 只读 getter
-- `server-init.ts` 改为类型安全调用：`deps.webChatTransport.channelManager`
-- `tsc --noEmit` → 0 errors
-
-#### 7b — Streaming 事件系统
-
-新增类型和事件：
-
-```typescript
-// 新增 StreamChunk 类型
-interface StreamChunk {
+interface StatusEvent {
   platform: ChannelPlatform;
-  to: string;        // sessionId
-  content: string;   // 当前 token 内容
-  index: number;     // chunk 序号 (0-based)
-  final: boolean;    // 是否最后一个 chunk
+  to: string;
+  status: 'processing' | 'completed' | 'failed';
 }
 
 // ChannelEventMap 新增
-'message:chunk': StreamChunk;
+'message:status': StatusEvent;
 
 // ChannelManager 新增方法
-emitChunk(chunk: StreamChunk): void;
+emitStatus(evt: StatusEvent): void;
 ```
 
-#### 7c — Push Bridge 扩展
+#### 8d — Push Bridge Status 事件桥接
 
-`WebChatPushBridge` 新增 `message:chunk` 事件监听，将 chunk 推送为 WS `type: "chunk"` 帧：
+`WebChatPushBridge` 新增 `message:status` 监听器 → 自动将 status 事件推送到对应 session 的 WS 客户端。
 
-```json
-{ "type": "chunk", "data": { "sessionId": "...", "content": "Hello ", "index": 0, "final": false } }
-```
+#### 8e — 测试矩阵更新
 
-#### 7d — Gateway Streaming Source
+| 测试场景 | 状态 |
+|----------|------|
+| 无空 chunk / last chunk `final=true` / outbound exactly once | ✅ |
+| zero-text completion — 0 chunks, 空 outbound, 不 timeout | ✅ |
+| mid-stream failure — 不静默拼接 fallback | ✅ |
+| pre-token failure — 干净 fallback | ✅ |
+| status lifecycle: `processing → completed` | ✅ |
+| status lifecycle: `processing → completed` (no-handler 空 fallback) | ✅ |
+| fallback without router — outbound exactly once | ✅ |
+| chatStreaming: pre-token fallback | ✅ |
+| chatStreaming: post-token failure throws | ✅ |
+| chatStreaming: normal path | ✅ |
 
-`Gateway` 新增 `routeStreamingMessage()` 方法：
-- 当 `platform === 'webchat'` 时自动使用 streaming 路径
-- 将 handler reply 按空格拆成 token，逐个 `emitChunk()`
-- 最后仍调用 `send()` 发送完整消息（HTTP 闭环不受影响）
-- 现有 `routeMessage()` 不改
+#### 8f — 旧测试适配
 
-#### 7e — 新增测试 (5 个)
+3 个旧测试从 "no-handler = timeout" 改为 "no-handler = 200 + 空 reply"：
+- `server.test.ts` — 504 → 200
+- `webchat-e2e.test.ts` — rejects → resolves with empty reply
 
-| # | 测试场景 | 状态 |
-|---|----------|------|
-| 11 | chunk 推送到订阅者 | ✅ |
-| 12 | chunk session 隔离 | ✅ |
-| 13 | chunk 顺序 + index + final 标记 | ✅ |
-| 14 | 非 webchat chunk 忽略 | ✅ |
-| 15 | 完整流程 (status → chunk×N → message) | ✅ |
-
-#### 7f — 验证结果
+#### 8g — 验证结果
 
 - `tsc --noEmit` → **0 errors**
-- `vitest run` → **28 files, 417 tests, all passed**
+- `vitest run` → **28 files, 429 tests, all passed**
 
 ---
 
@@ -254,7 +276,7 @@ core/src/
 
 | 测试文件 | 测试数 | 关注领域 |
 |----------|--------|----------|
-| `channels.test.ts` | 30 | 适配器、ChannelManager、Gateway |
+| `channels.test.ts` | 37 | 适配器、ChannelManager、Gateway、Streaming 协议 |
 | `webchat-e2e.test.ts` | 26 | WebChat HTTP 全栈 E2E |
 | `automaton.test.ts` | 25 | Conway Automaton 核心 |
 | `constitution.test.ts` | 20 | 三大法则合规 |
@@ -264,12 +286,12 @@ core/src/
 | `spend.test.ts` | 17 | 预算管理 |
 | `webchat-push.test.ts` | 17 | WS 推送 + chunk streaming |
 | `plugin-e2e.test.ts` | 17 | 插件闭环 E2E |
+| `inference.test.ts` | 17 | LLM 推理路由 + chatStreaming failover |
 | `dashboard.test.ts` | 16 | Dashboard 数据 |
 | `identity.test.ts` | 16 | 身份管理 |
 | `multiagent.test.ts` | 16 | 多 Agent 协调 |
 | `api-surface.test.ts` | 15 | Public API 稳定性 |
 | `plugins.test.ts` | 12 | 插件管理 |
-| `inference.test.ts` | 12 | LLM 推理路由 |
 | `evomap.test.ts` | 11 | 演化映射 |
 | `mcp/gateway.test.ts` | 11 | MCP 网关 |
 | `config.test.ts` | 10 | 配置加载 |
@@ -282,7 +304,7 @@ core/src/
 | `compute.test.ts` | 4 | 算力管理 |
 | `git.test.ts` | 4 | Git 操作 |
 | `f4-f6.test.ts` | 32 | 集成测试 |
-| **合计** | **417** | |
+| **合计** | **429** | |
 
 ---
 
@@ -323,6 +345,7 @@ Client             Server
   │←── chunk ────────│  { content: "Hello ", index: 0, final: false }
   │←── chunk ────────│  { content: "World", index: 1, final: true }
   │←── message ──────│  { content: "Hello World" }  (complete)
+  │←── status ───────│  { status: "completed" }
 ```
 
 ---
@@ -333,21 +356,21 @@ Client             Server
 
 ### 高优先级
 
-1. **真实 LLM Streaming 接入** — 当前 chunk 是模拟分词。将 `InferenceRouter` 的 stream 回调接入 Gateway，实现真实 token-by-token。
-2. **Session 持久化** — 当前 session 仅在内存中。接入 `state/repos` 实现 SQLite 持久化。
-3. **AgentLoop 集成** — 将 WebChat 请求接入真实 Agent 循环（而非简单 route handler）。
+1. **Session 持久化** — 当前 session 仅在内存中。接入 `state/repos` 实现 SQLite 持久化。
+2. **AgentLoop 集成** — 将 WebChat 请求接入真实 Agent 循环（而非简单 route handler）。
+3. **Dashboard WebSocket 集成** — 让 React Dashboard 通过 WS 协议实时显示 Agent 对话。
 
 ### 中优先级
 
-4. **Dashboard WebSocket 集成** — 让 React Dashboard 通过 WS 协议实时显示 Agent 对话。
-5. **Telegram Channel Adapter** — 第二个 channel，验证多通道架构的通用性。
-6. **Plugin 事件钩子** — 让插件能监听 channel 事件（`message:inbound` / `message:chunk`）。
+4. **Telegram Channel Adapter** — 第二个 channel，验证多通道架构的通用性。
+5. **Plugin 事件钩子** — 让插件能监听 channel 事件（`message:inbound` / `message:chunk`）。
+6. **HTTP SSE 旁路** — 为不支持 WS 的客户端提供 Server-Sent Events fallback。
 
 ### 低优先级
 
-7. **HTTP SSE 旁路** — 为不支持 WS 的客户端提供 Server-Sent Events fallback。
-8. **Auth 中间件** — 为 WebSocket 连接增加认证层。
-9. **Rate Limiting per-session** — 按 session 级别限流（当前是全局）。
+7. **Auth 中间件** — 为 WebSocket 连接增加认证层。
+8. **Rate Limiting per-session** — 按 session 级别限流（当前是全局）。
+9. **Client-side streaming SDK** — JS/TS SDK 封装 WS chunk 协议。
 
 ---
 
@@ -391,4 +414,4 @@ pnpm --filter @conshell/dashboard dev
 875e324 feat: initial commit — engineering baseline restored
 ```
 
-**下一个 commit (pending)**: `feat: token-level streaming + wiring cleanup`
+**最新 commit (pending)**: `feat: streaming protocol hardening`

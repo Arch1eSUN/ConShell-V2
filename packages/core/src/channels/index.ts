@@ -82,6 +82,15 @@ export interface StreamChunk {
   final: boolean;
 }
 
+/** Status lifecycle event */
+export interface StatusEvent {
+  platform: ChannelPlatform;
+  /** Target session/user ID */
+  to: string;
+  /** Status: 'processing' | 'completed' | 'failed' */
+  status: string;
+}
+
 // ── Channel Adapter Interface ───────────────────────────
 
 /**
@@ -107,6 +116,7 @@ export type ChannelEventMap = {
   'message:inbound':  ChannelMessage;
   'message:outbound': OutboundMessage;
   'message:chunk':    StreamChunk;
+  'message:status':   StatusEvent;
   'channel:connected':    { platform: ChannelPlatform };
   'channel:disconnected': { platform: ChannelPlatform; reason?: string };
   'channel:error':        { platform: ChannelPlatform; error: string };
@@ -268,6 +278,11 @@ export class ChannelManager {
   /** Emit a streaming chunk event (does not go through adapter.send) */
   emitChunk(chunk: StreamChunk): void {
     this.emit('message:chunk', chunk);
+  }
+
+  /** Emit a status lifecycle event (processing/completed/failed) */
+  emitStatus(platform: ChannelPlatform, to: string, status: string): void {
+    this.emit('message:status', { platform, to, status });
   }
 
   // ── Events ──────────────────────────────────────────

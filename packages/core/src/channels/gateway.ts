@@ -241,125 +241,162 @@ export class Gateway {
   }
 
   /**
-   * Stream-aware message routing.
+   * Stream-aware message routing with status lifecycle.
    *
-   * When inferenceRouter is available → real token-level streaming via
-   * InferenceRouter.chat() AsyncIterable. Each inference text chunk is
-   * emitted as a channel chunk event for WS push.
-   *
-   * When inferenceRouter is absent → falls back to route.handler() and
-   * emits a single synthetic chunk + final message.
-   *
-   * In both paths the HTTP loop resolves with the complete message.
+   * Protocol contract:
+   * - status:processing → chunk(s) → outbound message → status:completed
+   * - status:processing → error → status:failed
+   * - chunk.content is always non-empty
+   * - last content chunk has final=true
+   * - outbound message fires exactly once (even for zero-text)
    */
   private async routeStreamingMessage(msg: ChannelMessage): Promise<void> {
     const target = msg.groupId ?? msg.from;
+
+    // Emit processing status
+    this.manager.emitStatus(msg.platform, target, 'processing');
 
     // ── Real inference streaming path ──
     if (this.inferenceRouter) {
       try {
         await this.routeWithInference(msg, target);
+        this.manager.emitStatus(msg.platform, target, 'completed');
       } catch (err) {
         this.stats.errors++;
         this.logger.error('Inference streaming error', { error: String(err) });
-        // Fallback: try route handlers
-        await this.routeFallback(msg, target);
+        // Try fallback route handlers
+        try {
+          await this.routeFallback(msg, target);
+          this.manager.emitStatus(msg.platform, target, 'completed');
+        } catch (fallbackErr) {
+          this.stats.errors++;
+          this.logger.error('Fallback also failed', { error: String(fallbackErr) });
+          // Ensure outbound fires so HTTP doesn't hang
+          await this.sendSafe(msg.platform, target, '', msg.id);
+          this.manager.emitStatus(msg.platform, target, 'failed');
+        }
       }
       return;
     }
 
     // ── Fallback: no inference router ──
-    await this.routeFallback(msg, target);
+    try {
+      await this.routeFallback(msg, target);
+      this.manager.emitStatus(msg.platform, target, 'completed');
+    } catch (err) {
+      this.stats.errors++;
+      this.logger.error('Fallback route error', { error: String(err) });
+      await this.sendSafe(msg.platform, target, '', msg.id);
+      this.manager.emitStatus(msg.platform, target, 'failed');
+    }
   }
 
   /**
    * Real inference-backed streaming.
-   * Consumes InferenceRouter.chat() AsyncIterable and emits channel chunks.
+   *
+   * Uses chatStreaming() which enforces pre/post-token failover policy.
+   * Emits non-empty chunks only. Last content chunk has final=true.
+   * Always sends outbound message exactly once (even for zero-text).
    */
   private async routeWithInference(msg: ChannelMessage, target: string): Promise<void> {
     const router = this.inferenceRouter!;
     const messages: Message[] = [];
 
-    // Add system prompt if configured
     if (this.config.defaultSystemPrompt) {
       messages.push({ role: 'system', content: this.config.defaultSystemPrompt });
     }
-
     messages.push({ role: 'user', content: msg.content });
 
     const model = this.config.defaultModel ?? 'gpt-4';
     let fullText = '';
     let chunkIndex = 0;
 
-    for await (const chunk of router.chat(messages, { model })) {
+    // Collect all text chunks (with non-final flag initially)
+    const pendingChunks: Array<{ content: string; index: number }> = [];
+
+    for await (const chunk of router.chatStreaming(messages, { model })) {
       if (chunk.type === 'text' && chunk.text) {
         fullText += chunk.text;
-        this.manager.emitChunk({
-          platform: msg.platform,
-          to: target,
-          content: chunk.text,
-          index: chunkIndex++,
-          final: false,
-        });
+        pendingChunks.push({ content: chunk.text, index: chunkIndex++ });
       }
-      // usage/tool_call/done chunks are consumed but not forwarded as channel chunks
     }
 
-    // Emit final chunk marker
-    if (chunkIndex > 0) {
+    // Emit chunks: all non-final except last which is final=true
+    for (let i = 0; i < pendingChunks.length; i++) {
+      const isLast = i === pendingChunks.length - 1;
       this.manager.emitChunk({
         platform: msg.platform,
         to: target,
-        content: '',
-        index: chunkIndex,
-        final: true,
+        content: pendingChunks[i].content,
+        index: pendingChunks[i].index,
+        final: isLast,
       });
     }
 
-    // Send complete outbound message (resolves HTTP + fires outbound event)
-    if (fullText) {
-      await this.send({
-        platform: msg.platform,
-        to: target,
-        content: fullText,
-        replyTo: msg.id,
-      });
-    }
+    // Always send outbound message (zero-text → content: '')
+    await this.send({
+      platform: msg.platform,
+      to: target,
+      content: fullText,
+      replyTo: msg.id,
+    });
   }
 
   /**
    * Fallback path: use route handlers (non-streaming).
-   * Emits a single synthetic chunk then the full message.
+   * Emits a single final chunk if reply is non-empty.
+   * Always sends outbound message exactly once.
    */
   private async routeFallback(msg: ChannelMessage, target: string): Promise<void> {
     for (const route of this.routes) {
       if (route.from && route.from !== msg.platform) continue;
       if (route.pattern && !route.pattern.test(msg.content)) continue;
 
-      try {
-        const reply = await route.handler(msg);
-        if (reply) {
-          // Emit single synthetic chunk (replaces old word-splitting mock)
-          this.manager.emitChunk({
-            platform: msg.platform,
-            to: target,
-            content: reply,
-            index: 0,
-            final: true,
-          });
+      const reply = await route.handler(msg);
+      const content = reply ?? '';
 
-          // Send complete message
-          await this.send({
-            platform: msg.platform,
-            to: target,
-            content: reply,
-            replyTo: msg.id,
-          });
-        }
-      } catch (err) {
-        this.stats.errors++;
-        this.logger.error('Fallback route handler error', { error: String(err) });
+      if (content) {
+        // Emit single final chunk for non-empty reply
+        this.manager.emitChunk({
+          platform: msg.platform,
+          to: target,
+          content,
+          index: 0,
+          final: true,
+        });
       }
+
+      // Always send outbound message (even if content is empty)
+      await this.send({
+        platform: msg.platform,
+        to: target,
+        content,
+        replyTo: msg.id,
+      });
+      return; // First matching route wins
+    }
+
+    // No route matched — still send empty outbound so HTTP doesn't hang
+    await this.send({
+      platform: msg.platform,
+      to: target,
+      content: '',
+      replyTo: msg.id,
+    });
+  }
+
+  /** Send that never throws — ensures HTTP doesn't hang on error */
+  private async sendSafe(
+    platform: ChannelPlatform,
+    to: string,
+    content: string,
+    replyTo?: string,
+  ): Promise<void> {
+    try {
+      await this.send({ platform, to, content, replyTo });
+    } catch {
+      // Best-effort — HTTP may still timeout but at least we tried
+      this.logger.error('sendSafe failed', { platform, to });
     }
   }
 

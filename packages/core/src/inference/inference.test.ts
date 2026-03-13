@@ -169,4 +169,85 @@ describe('InferenceRouter', () => {
     expect(collected[0].type).toBe('text');
     expect(collected[1].type).toBe('done');
   });
+
+  // ── chatStreaming failover policy ────────────────────────
+
+  it('chatStreaming: pre-token failure allows fallback', async () => {
+    // Primary that fails immediately
+    const failingProvider: InferenceProvider = {
+      id: 'failing',
+      name: 'Failing',
+      async *chat() {
+        throw new Error('timeout');
+      },
+      async listModels() { return ['m']; },
+      estimateCost() { return ZERO_CENTS; },
+    };
+
+    const fallbackChunks: StreamChunk[] = [
+      { type: 'text', text: 'recovered' },
+    ];
+
+    router.register(failingProvider);
+    router.register(makeProvider('fallback', fallbackChunks));
+    router.setFallbackChain(['fallback']);
+
+    const collected: StreamChunk[] = [];
+    for await (const chunk of router.chatStreaming([], { model: 'test' })) {
+      collected.push(chunk);
+    }
+    expect(collected).toHaveLength(1);
+    expect(collected[0]).toEqual({ type: 'text', text: 'recovered' });
+  });
+
+  it('chatStreaming: post-token failure throws without fallback', async () => {
+    // Primary that yields text then crashes
+    const failingProvider: InferenceProvider = {
+      id: 'failing',
+      name: 'Failing',
+      async *chat() {
+        yield { type: 'text' as const, text: 'partial' };
+        throw new Error('connection reset');
+      },
+      async listModels() { return ['m']; },
+      estimateCost() { return ZERO_CENTS; },
+    };
+
+    const fallbackChunks: StreamChunk[] = [
+      { type: 'text', text: 'should not appear' },
+    ];
+
+    router.register(failingProvider);
+    router.register(makeProvider('fallback', fallbackChunks));
+    router.setFallbackChain(['fallback']);
+
+    const collected: StreamChunk[] = [];
+    await expect(async () => {
+      for await (const chunk of router.chatStreaming([], { model: 'test' })) {
+        collected.push(chunk);
+      }
+    }).rejects.toThrow('connection reset');
+
+    // Only the partial chunk was yielded before error
+    expect(collected).toHaveLength(1);
+    expect(collected[0]).toEqual({ type: 'text', text: 'partial' });
+  });
+
+  it('chatStreaming: normal path streams all chunks', async () => {
+    const chunks: StreamChunk[] = [
+      { type: 'text', text: 'Hello' },
+      { type: 'text', text: ' World' },
+      { type: 'done' },
+    ];
+    router.register(makeProvider('openai', chunks));
+
+    const collected: StreamChunk[] = [];
+    for await (const chunk of router.chatStreaming([], { model: 'gpt-4' })) {
+      collected.push(chunk);
+    }
+    expect(collected).toHaveLength(3);
+    expect(collected[0]).toEqual({ type: 'text', text: 'Hello' });
+    expect(collected[1]).toEqual({ type: 'text', text: ' World' });
+    expect(collected[2]).toEqual({ type: 'done' });
+  });
 });

@@ -240,18 +240,23 @@ describe('WebChat Full-Loop (Transport → Gateway → Response)', () => {
     ).rejects.toThrow('not connected');
   });
 
-  it('should timeout when no handler responds', async () => {
+  it('should return empty reply when no handler matches', async () => {
     // Create gateway with no route handlers
     const emptyGw = new Gateway({
       channels: [{ platform: 'webchat', enabled: true }],
     });
     await emptyGw.start();
 
-    const slowTransport = new WebChatTransport(emptyGw.getManager(), { timeoutMs: 200 });
+    const emptyTransport = new WebChatTransport(emptyGw.getManager(), { timeoutMs: 2000 });
 
-    await expect(
-      slowTransport.handleMessage({ sessionId: 'lonely', message: 'hello?' })
-    ).rejects.toThrow('timeout');
+    // Protocol hardening: Gateway always sends outbound (even empty)
+    // so HTTP never times out — returns empty reply instead
+    const response = await emptyTransport.handleMessage({
+      sessionId: 'lonely',
+      message: 'hello?',
+    });
+    expect(response.reply).toBe('');
+    expect(response.sessionId).toBe('lonely');
 
     await emptyGw.stop();
   });
