@@ -1,6 +1,6 @@
 # 🐢 ConShell V2 — 开发日志 (DEVLOG)
 
-> **最后更新**: 2026-03-13 (Round 12)
+> **最后更新**: 2026-03-14 (Round 13)
 > **用途**: 提供给 LLM (GPT/Claude) 快速理解项目全貌，生成下一步开发计划。
 
 ---
@@ -624,3 +624,62 @@ ce7d0fa feat(tools): Round 11 — memory tools + spend persistence
 | `agent-loop.test.ts` [NEW] | 9 | ✅ |
 | `kernel.test.ts` [UPDATED] | 8 (+3) | ✅ |
 | **总计** | **507 / 507** | **✅ 全通过** |
+
+---
+
+## Round 13 — Engineering Integrity Audit (2026-03-14)
+
+**目标**: 恢复工程证据链可信度。验证 Round 12 所有声明的真实性，定位并修复任何测试失败，确保 README/DEVLOG 与代码现实对齐。
+
+### 审计方法
+
+1. 独立逐文件核查 T1-T4 关键路径
+2. 运行 `tsc --noEmit` + `vitest run` 全量验证
+3. AgentReplicator `should propagate constitution` 专项复现
+4. `node_modules` EPERM 根因分析
+
+### 审计结果
+
+| 验证项 | 命令 | 结果 |
+|--------|------|------|
+| TypeScript 类型检查 | `npx tsc --noEmit` | ✅ 0 errors |
+| 全量测试 | `TMPDIR=/tmp npx vitest run --no-coverage` | ✅ 34 files, 507/507 passed |
+| AgentReplicator constitution | `npx vitest run src/multiagent/multiagent.test.ts` | ✅ 16/16 passed, failure NOT reproducible |
+| pnpm ls / pnpm build | `pnpm ls --depth 0` | ❌ EPERM (macOS 系统权限) |
+
+### 根因分析
+
+#### A. AgentReplicator 疑似失败 → 不可复现
+
+- 测试 `should propagate constitution` 在当前 HEAD (`0eec891`) 上 **通过**
+- 代码逻辑审查：`propagateConstitution()` 在 `constitutionPath` 不存在时正确 fallback 到 `EMBEDDED_CONSTITUTION`
+- 测试构造正确：`constitutionPath: '/nonexistent/CONSTITUTION.md'` → 使用嵌入宪法 → 验证 `Law I` + `Never Harm` 存在
+- 结论：先前报告的 `The "path" argument must be of type string. Received undefined` 可能是环境污染（异常 node_modules 副本或 ABI 不匹配）导致的间歇性失败，而非代码缺陷
+
+#### B. node_modules EPERM → macOS 系统级权限
+
+- **根因**: `node_modules/` 目录被 macOS 附加了 SIP (System Integrity Protection) 相关的不可变属性
+- **症状**: `ls`, `pnpm ls`, `pnpm build`, `chflags`, `xattr` 均返回 `Operation not permitted`
+- **影响范围**: 仅影响直接访问 `node_modules` 的命令（pnpm build, pnpm install, pnpm ls）
+- **不影响**: `tsc --noEmit`（TS 类型检查）、`vitest run`（测试执行）
+- **修复方式**: 需要 `sudo chflags -R nouchg node_modules && sudo xattr -cr node_modules`，或删除后重新 `pnpm install`
+
+### 代码变更
+
+**无。** 本轮为纯审计轮次，代码层面 0 修改。
+
+### 文档变更
+
+| 文件 | 变更 | 原因 |
+|------|------|------|
+| DEVLOG.md | 添加 Round 13 条目 | 记录审计结论 |
+| DEVLOG.md | 更新 "最后更新" 日期 | 日期对齐 |
+| README.md | 无变更 | 测试数/功能描述均未改变 |
+
+### 已知风险
+
+| 风险 | 分类 | 影响 |
+|------|------|------|
+| node_modules EPERM | 环境 | 阻塞 `pnpm build` / `pnpm install`, 需 `sudo` 修复 |
+| better-sqlite3 ABI | 环境 | node_modules 不可访问时 native module 无法加载；测试通过因 vitest mock |
+
