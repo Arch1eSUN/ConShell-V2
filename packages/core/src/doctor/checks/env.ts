@@ -20,6 +20,7 @@ export function checkEnvironment(projectRoot: string): CheckResult[] {
     summary: `Node ${nodeVersion} (arch: ${process.arch}, platform: ${process.platform}). Engine spec requires >=20.0.0.`,
     evidence: `process.version = ${nodeVersion}`,
     confidence: 'high',
+    evidenceType: 'runtime-probe',
   });
 
   // E2: .nvmrc presence
@@ -38,6 +39,7 @@ export function checkEnvironment(projectRoot: string): CheckResult[] {
         : 'No .nvmrc or .node-version file. Node version drift between environments is possible.',
     evidence: `existsSync(.nvmrc) = ${nvmrcExists}, existsSync(.node-version) = ${nodeVersionExists}`,
     confidence: 'high',
+    evidenceType: 'fs-scan',
   });
 
   // E3: workspace root validity
@@ -52,6 +54,7 @@ export function checkEnvironment(projectRoot: string): CheckResult[] {
     summary: `package.json: ${packageJsonExists ? 'present' : 'MISSING'}, pnpm-workspace.yaml: ${pnpmWorkspaceExists ? 'present' : 'MISSING'}`,
     evidence: `existsSync(package.json) = ${packageJsonExists}, existsSync(pnpm-workspace.yaml) = ${pnpmWorkspaceExists}`,
     confidence: 'high',
+    evidenceType: 'fs-scan',
   });
 
   // E4: Core config files
@@ -66,6 +69,7 @@ export function checkEnvironment(projectRoot: string): CheckResult[] {
     summary: `CONSTITUTION.md: ${constitutionExists ? '✓' : '✗'}, tsconfig.base.json: ${tsconfigBaseExists ? '✓' : '✗'}`,
     evidence: `File existence checks on project root`,
     confidence: 'high',
+    evidenceType: 'fs-scan',
   });
 
   return results;

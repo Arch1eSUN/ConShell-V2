@@ -22,6 +22,7 @@ export function checkBuildReadiness(coreRoot: string): CheckResult[] {
       : 'tsconfig.json MISSING — TypeScript compilation will fail.',
     evidence: `existsSync(${tsconfigPath}) = ${tsconfigExists}`,
     confidence: 'high',
+    evidenceType: 'fs-scan',
   });
 
   // B2: dist directory
@@ -47,6 +48,7 @@ export function checkBuildReadiness(coreRoot: string): CheckResult[] {
       : 'dist/ does not exist. The package has not been built, or build output was cleaned.',
     evidence: `existsSync(${distPath}) = ${distExists}`,
     confidence: distExists ? 'medium' : 'high',
+    evidenceType: 'fs-scan',
   });
 
   // B3: package.json build script
@@ -68,6 +70,7 @@ export function checkBuildReadiness(coreRoot: string): CheckResult[] {
       : 'No "build" script found in package.json.',
     evidence: `package.json scripts.build exists: ${hasBuildScript}`,
     confidence: 'high',
+    evidenceType: 'fs-scan',
   });
 
   return results;

@@ -5,7 +5,10 @@
  * it is currently trustworthy by checking environment, dependencies,
  * tests, build, and external integrations.
  *
- * Each check produces evidence-backed results with confidence levels.
+ * Design principle: truth-preserving, not narrative-generating.
+ * Every check includes evidence provenance and confidence levels.
+ *
+ * Round 14.1: Added evidenceType provenance and ReadinessGate.
  */
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -13,6 +16,15 @@
 export type Severity = 'info' | 'warning' | 'blocker';
 
 export type Confidence = 'high' | 'medium' | 'low';
+
+/** How the evidence was obtained */
+export type EvidenceType =
+  | 'code-inspection'
+  | 'fs-scan'
+  | 'runtime-probe'
+  | 'test-execution'
+  | 'network-observation'
+  | 'historical-claim';
 
 export interface CheckResult {
   /** Check identifier */
@@ -31,6 +43,26 @@ export interface CheckResult {
   evidence: string;
   /** Confidence in the conclusion */
   confidence: Confidence;
+  /** How the evidence was obtained */
+  evidenceType: EvidenceType;
+}
+
+export interface ReadinessGate {
+  /** Whether project is ready for feature expansion */
+  verdict: 'ready' | 'conditionally-ready' | 'not-ready';
+  /** Individual gate criteria */
+  criteria: GateCriterion[];
+  /** Human-readable rationale */
+  rationale: string;
+}
+
+export interface GateCriterion {
+  /** Criterion name */
+  name: string;
+  /** Whether it passes */
+  pass: boolean;
+  /** Evidence or note */
+  note: string;
 }
 
 export interface IntegrityReport {
@@ -44,6 +76,8 @@ export interface IntegrityReport {
   counts: { info: number; warning: number; blocker: number };
   /** Standard command panel */
   commands: CommandPanel;
+  /** Expansion readiness gate */
+  readiness: ReadinessGate;
 }
 
 export interface CommandPanel {
@@ -108,13 +142,90 @@ export async function runDiagnostics(
     ],
   };
 
+  // Build readiness gate
+  const readiness = computeReadinessGate(checks, counts);
+
   return {
     timestamp: new Date().toISOString(),
     health,
     checks,
     counts,
     commands,
+    readiness,
   };
+}
+
+/**
+ * Compute the readiness gate from check results.
+ */
+function computeReadinessGate(
+  checks: CheckResult[],
+  counts: { blocker: number; warning: number },
+): ReadinessGate {
+  const criteria: GateCriterion[] = [];
+
+  // Criterion 1: No blockers
+  criteria.push({
+    name: 'No blocker-severity checks',
+    pass: counts.blocker === 0,
+    note: counts.blocker === 0 ? 'All checks pass or warn' : `${counts.blocker} blocker(s) found`,
+  });
+
+  // Criterion 2: better-sqlite3 usable
+  const sqliteCheck = checks.find(c => c.id === 'deps-better-sqlite3');
+  criteria.push({
+    name: 'Critical native dependency (better-sqlite3)',
+    pass: sqliteCheck?.status === 'pass',
+    note: sqliteCheck?.summary ?? 'not checked',
+  });
+
+  // Criterion 3: Test boundary controlled
+  const guardCheck = checks.find(c => c.id === 'tests-root-guard');
+  criteria.push({
+    name: 'Root vitest contamination guard',
+    pass: guardCheck?.status === 'pass',
+    note: guardCheck?.summary ?? 'not checked',
+  });
+
+  // Criterion 4: Vitest config present
+  const vitestCheck = checks.find(c => c.id === 'tests-vitest-config');
+  criteria.push({
+    name: 'Vitest configuration present',
+    pass: vitestCheck?.status === 'pass',
+    note: vitestCheck?.summary ?? 'not checked',
+  });
+
+  // Criterion 5: Integration truth model honest
+  const integChecks = checks.filter(c => c.category === 'integrations');
+  const hasOverclaim = integChecks.some(c => c.confidence === 'high' && c.evidenceType === 'historical-claim');
+  criteria.push({
+    name: 'Integration claims evidence-backed',
+    pass: !hasOverclaim,
+    note: hasOverclaim
+      ? 'Some integration claims use historical-claim provenance with high confidence — review needed'
+      : 'Integration claims properly provenance-tagged',
+  });
+
+  const allPass = criteria.every(c => c.pass);
+  const anyFail = criteria.some(c => !c.pass);
+  const warningCount = counts.warning;
+
+  let verdict: ReadinessGate['verdict'];
+  let rationale: string;
+
+  if (allPass && warningCount === 0) {
+    verdict = 'ready';
+    rationale = 'All gate criteria pass. No warnings. Ready for feature expansion.';
+  } else if (allPass && warningCount > 0) {
+    verdict = 'conditionally-ready';
+    rationale = `All gate criteria pass but ${warningCount} warning(s) exist. Feature expansion is possible but warnings should be triaged.`;
+  } else {
+    verdict = 'not-ready';
+    const failed = criteria.filter(c => !c.pass).map(c => c.name);
+    rationale = `Gate criteria failed: ${failed.join(', ')}. Resolve before feature expansion.`;
+  }
+
+  return { verdict, criteria, rationale };
 }
 
 /**
@@ -141,7 +252,7 @@ export function formatReport(report: IntegrityReport): string {
       lines.push(`${statusIcon} [${check.id}] ${check.label}`);
       lines.push(`   ${check.summary}`);
       lines.push(`   Evidence: ${check.evidence}`);
-      lines.push(`   Confidence: ${check.confidence}`);
+      lines.push(`   Provenance: ${check.evidenceType} | Confidence: ${check.confidence}`);
       lines.push('');
     }
   }
@@ -153,6 +264,16 @@ export function formatReport(report: IntegrityReport): string {
   lines.push(`  DO NOT USE:`);
   for (const cmd of report.commands.doNotUse) {
     lines.push(`    ✗ ${cmd}`);
+  }
+  lines.push('');
+
+  // Readiness gate
+  const gateIcon = report.readiness.verdict === 'ready' ? '✅' : report.readiness.verdict === 'conditionally-ready' ? '⚠️' : '❌';
+  lines.push(`── READINESS GATE ────────────────────────────────`);
+  lines.push(`${gateIcon} Verdict: ${report.readiness.verdict.toUpperCase()}`);
+  lines.push(`   ${report.readiness.rationale}`);
+  for (const c of report.readiness.criteria) {
+    lines.push(`   ${c.pass ? '✅' : '❌'} ${c.name}: ${c.note}`);
   }
 
   return lines.join('\n');

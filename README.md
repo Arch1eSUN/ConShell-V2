@@ -235,7 +235,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm workspace
 - **Build:** tsc
-- **Test:** Vitest (520 functional tests + benchmarks)
+- **Test:** Vitest (522 functional tests + benchmarks)
 - **CI:** GitHub Actions
 - **Frontend:** React + Vite
 - **Database:** SQLite (better-sqlite3, WAL mode)
@@ -248,7 +248,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 | Core build | ✅ Passing |
 | CLI build | ✅ Passing |
 | Dashboard build | ✅ Passing (tsc + vite) |
-| Functional tests | ✅ 520 passing (35 files) |
+| Functional tests | ✅ 522 passing (35 files) |
 | Benchmarks | ✅ Separate `test:bench` |
 | CI | ✅ GitHub Actions |
 | WebChat | ✅ HTTP + WebSocket + token streaming |

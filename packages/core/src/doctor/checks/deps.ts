@@ -1,7 +1,10 @@
 /**
- * Dependency integrity checks — abnormal node_modules, native modules, EPERM.
+ * Dependency integrity checks — node_modules, native modules, EPERM.
+ *
+ * Round 14.1: Added instantiation probe for better-sqlite3
+ * (resolve + require + instantiate + query) to prove full usability.
  */
-import { existsSync, readdirSync, statSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CheckResult } from '../index.js';
 
@@ -25,21 +28,85 @@ function findNumberedNodeModules(dir: string): string[] {
 }
 
 /**
- * Check if a native module can be loaded.
+ * Full native module probe: resolve → require → instantiate → query.
+ * Returns granular results so Doctor can report exactly where it fails.
  */
-function probeNativeModule(moduleName: string): { loadable: boolean; resolvedPath: string | null; error: string | null } {
+function probeNativeModule(moduleName: string): {
+  resolvable: boolean;
+  loadable: boolean;
+  instantiable: boolean;
+  queryable: boolean;
+  resolvedPath: string | null;
+  error: string | null;
+  failStage: 'resolve' | 'require' | 'instantiate' | 'query' | null;
+} {
+  let resolvedPath: string | null = null;
+
+  // Stage 1: resolve
   try {
-    const resolved = require.resolve(moduleName);
-    // Verify the actual module can instantiate
-    const mod = require(moduleName);
-    return { loadable: true, resolvedPath: resolved, error: null };
+    resolvedPath = require.resolve(moduleName);
   } catch (err) {
     return {
-      loadable: false,
+      resolvable: false, loadable: false, instantiable: false, queryable: false,
       resolvedPath: null,
       error: err instanceof Error ? err.message.split('\n')[0]! : String(err),
+      failStage: 'resolve',
     };
   }
+
+  // Stage 2: require
+  let Database: any;
+  try {
+    Database = require(moduleName);
+  } catch (err) {
+    return {
+      resolvable: true, loadable: false, instantiable: false, queryable: false,
+      resolvedPath,
+      error: err instanceof Error ? err.message.split('\n')[0]! : String(err),
+      failStage: 'require',
+    };
+  }
+
+  // Stage 3: instantiate (in-memory)
+  let db: any;
+  try {
+    db = new Database(':memory:');
+  } catch (err) {
+    return {
+      resolvable: true, loadable: true, instantiable: false, queryable: false,
+      resolvedPath,
+      error: err instanceof Error ? err.message.split('\n')[0]! : String(err),
+      failStage: 'instantiate',
+    };
+  }
+
+  // Stage 4: query
+  try {
+    db.exec('CREATE TABLE _doctor_probe(x INTEGER)');
+    db.prepare('INSERT INTO _doctor_probe VALUES(?)').run(1);
+    const row = db.prepare('SELECT x FROM _doctor_probe').get();
+    db.close();
+    if (!row || (row as any).x !== 1) {
+      return {
+        resolvable: true, loadable: true, instantiable: true, queryable: false,
+        resolvedPath, error: 'Query returned unexpected result',
+        failStage: 'query',
+      };
+    }
+  } catch (err) {
+    try { db.close(); } catch { /* */ }
+    return {
+      resolvable: true, loadable: true, instantiable: true, queryable: false,
+      resolvedPath,
+      error: err instanceof Error ? err.message.split('\n')[0]! : String(err),
+      failStage: 'query',
+    };
+  }
+
+  return {
+    resolvable: true, loadable: true, instantiable: true, queryable: true,
+    resolvedPath, error: null, failStage: null,
+  };
 }
 
 /**
@@ -71,6 +138,7 @@ export function checkDependencies(projectRoot: string, coreRoot: string): CheckR
       : 'Root node_modules is EPERM-blocked. pnpm install/build operations will fail.',
     evidence: `statSync("${rootNm}") ${rootNmAccessible ? 'succeeded' : 'threw EPERM'}`,
     confidence: 'high',
+    evidenceType: 'fs-scan',
   });
 
   // D2: Numbered node_modules duplicates
@@ -99,23 +167,49 @@ export function checkDependencies(projectRoot: string, coreRoot: string): CheckR
       : 'No numbered node_modules duplicates found.',
     evidence: `Scanned ${dirsToScan.length} directories for pattern /^node_modules\\s+\\d+$/`,
     confidence: 'high',
+    evidenceType: 'fs-scan',
   });
 
-  // D3: better-sqlite3 native module
+  // D3: better-sqlite3 native module (4-stage probe)
   const sqliteProbe = probeNativeModule('better-sqlite3');
+
+  // Build a detailed status summary
+  let sqliteSummary: string;
+  let sqliteSeverity: CheckResult['severity'];
+  let sqliteStatus: CheckResult['status'];
+
+  if (sqliteProbe.queryable) {
+    sqliteSummary = `better-sqlite3 fully healthy: resolve ✅ require ✅ instantiate ✅ query ✅. Path: ${sqliteProbe.resolvedPath}`;
+    sqliteSeverity = 'info';
+    sqliteStatus = 'pass';
+  } else if (sqliteProbe.instantiable) {
+    sqliteSummary = `better-sqlite3 partially usable: resolve ✅ require ✅ instantiate ✅ query ❌ (${sqliteProbe.error}). Path: ${sqliteProbe.resolvedPath}`;
+    sqliteSeverity = 'warning';
+    sqliteStatus = 'warn';
+  } else if (sqliteProbe.loadable) {
+    sqliteSummary = `better-sqlite3 loadable but NOT instantiable: resolve ✅ require ✅ instantiate ❌ (${sqliteProbe.error}). ABI mismatch or native binding failure likely.`;
+    sqliteSeverity = 'blocker';
+    sqliteStatus = 'fail';
+  } else if (sqliteProbe.resolvable) {
+    sqliteSummary = `better-sqlite3 resolved but NOT loadable: resolve ✅ require ❌ (${sqliteProbe.error}). EPERM or ABI mismatch.`;
+    sqliteSeverity = 'blocker';
+    sqliteStatus = 'fail';
+  } else {
+    sqliteSummary = `better-sqlite3 NOT resolvable: ${sqliteProbe.error}. Module not installed or path broken.`;
+    sqliteSeverity = 'blocker';
+    sqliteStatus = 'fail';
+  }
+
   results.push({
     id: 'deps-better-sqlite3',
-    label: 'better-sqlite3 Native Module',
+    label: 'better-sqlite3 Native Module (4-stage probe)',
     category: 'deps',
-    severity: sqliteProbe.loadable ? 'info' : 'warning',
-    status: sqliteProbe.loadable ? 'pass' : 'warn',
-    summary: sqliteProbe.loadable
-      ? `better-sqlite3 is loadable. Resolved: ${sqliteProbe.resolvedPath}`
-      : `better-sqlite3 NOT loadable: ${sqliteProbe.error}. Tests that directly instantiate Database will fail if not mocked.`,
-    evidence: sqliteProbe.loadable
-      ? `require.resolve('better-sqlite3') = ${sqliteProbe.resolvedPath}`
-      : `require('better-sqlite3') threw: ${sqliteProbe.error}`,
+    severity: sqliteSeverity,
+    status: sqliteStatus,
+    summary: sqliteSummary,
+    evidence: `4-stage probe: resolve=${sqliteProbe.resolvable}, require=${sqliteProbe.loadable}, instantiate=${sqliteProbe.instantiable}, query=${sqliteProbe.queryable}${sqliteProbe.failStage ? ` | failed at: ${sqliteProbe.failStage}` : ''}${sqliteProbe.resolvedPath ? ` | path: ${sqliteProbe.resolvedPath}` : ''}`,
     confidence: 'high',
+    evidenceType: 'runtime-probe',
   });
 
   // D4: Core node_modules accessibility
@@ -132,6 +226,7 @@ export function checkDependencies(projectRoot: string, coreRoot: string): CheckR
       : 'Core node_modules is EPERM-blocked.',
     evidence: `statSync("${coreNm}") ${coreNmAccessible ? 'succeeded' : 'threw EPERM'}`,
     confidence: 'high',
+    evidenceType: 'fs-scan',
   });
 
   return results;

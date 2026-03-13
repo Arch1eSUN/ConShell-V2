@@ -1,6 +1,6 @@
 # 🐢 ConShell V2 — 开发日志 (DEVLOG)
 
-> **最后更新**: 2026-03-14 (Round 14)
+> **最后更新**: 2026-03-14 (Round 14.1)
 > **用途**: 提供给 LLM (GPT/Claude) 快速理解项目全貌，生成下一步开发计划。
 
 ---
@@ -15,7 +15,7 @@
 
 - **语言**: TypeScript（strict mode）
 - **包管理**: pnpm monorepo
-- **测试**: vitest（35 个测试文件（含 benchmark + doctor），520 个测试用例）
+- **测试**: vitest（35 个测试文件（含 benchmark + doctor），522 个测试用例）
 - **构建**: tsc
 - **CI**: GitHub Actions
 
@@ -744,4 +744,37 @@ ce7d0fa feat(tools): Round 11 — memory tools + spend persistence
 - ⚠️ node_modules EPERM 需要 `sudo` 修复才能 `pnpm build`
 - ⚠️ 编号 node_modules 副本应该被清理
 - ⚠️ 无 `.nvmrc` — Node 版本漂移风险
+
+---
+
+## Round 14.1 — Audit the Doctor Itself (2026-03-14)
+
+**目标**: 审计 Round 14 Doctor 的结论可信度，修复虚假置信度，将 Doctor 从报告工具升级为工程真实性守门人。
+
+### Round 14 审计结论
+
+| Round 14 声明 | 裁定 | 证据 |
+|---------------|------|------|
+| "better-sqlite3 is loadable" | ✅ **正确** | `require` 成功，`new Database(':memory:')` 可工作，查询返回 `{x:42}` |
+| "spend.test.ts passes with real DB" | ✅ **正确** | 8/8 通过，无 mock（grep 搜索确认 0 个 vi.mock 用于 sqlite）|
+| "35 files / 520 tests" | ✅ **执行数据正确** | 静态清点 36 文件（含 1 个 benchmark），vitest 执行 35 文件 |
+| "EvoMap has exactly 2 endpoints" | ❌ **过度声明** | 这只是客户端实现的 ≠ 平台暴露的 |
+| "Conditionally ready" | ⚠️ **需要精确化** | 结论有效但缺乏明确的 Gate 标准 |
+
+### 修正内容
+
+| 修正 | 详情 |
+|------|------|
+| `evidenceType` | 所有 CheckResult 现在包含来源类型：code-inspection / fs-scan / runtime-probe / network-observation / historical-claim |
+| ReadinessGate | 新增显式扩展准备度门控，包含 5 个可验证标准 |
+| EvoMap 真实性模型 | 拆分为 `integ-evomap-implemented`（代码确认）和 `integ-evomap-observed`（历史观测）|
+| better-sqlite3 4 阶段探针 | resolve → require → instantiate → query，精确报告失败阶段 |
+| 测试边界诚实化 | `tests-file-count` → `tests-file-inventory`（标注为静态清点非执行真相），新增 `tests-execution-note` |
+
+### 测试矩阵更新
+
+| 测试文件 | 用例数 | 状态 |
+|----------|--------|------|
+| `doctor.test.ts` [UPDATED] | 15 (+2) | ✅ |
+| **总计** | **522 / 522** | **✅ 全通过 (35 文件)** |
 
