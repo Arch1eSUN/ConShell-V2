@@ -82,13 +82,31 @@ export interface StreamChunk {
   final: boolean;
 }
 
+/** Status lifecycle values */
+export type StreamStatus = 'processing' | 'completed' | 'failed';
+
 /** Status lifecycle event */
 export interface StatusEvent {
   platform: ChannelPlatform;
   /** Target session/user ID */
   to: string;
-  /** Status: 'processing' | 'completed' | 'failed' */
-  status: string;
+  /** Status lifecycle phase */
+  status: StreamStatus;
+}
+
+/** Terminal error event for streaming failures */
+export type StreamErrorCode = 'INFERENCE_STREAM_FAILED' | 'PROVIDER_UNAVAILABLE';
+
+export interface StreamErrorEvent {
+  platform: ChannelPlatform;
+  /** Target session/user ID */
+  to: string;
+  /** Error classification */
+  code: StreamErrorCode;
+  /** Human-readable error description */
+  message: string;
+  /** Whether the client should retry */
+  retryable: boolean;
 }
 
 // ── Channel Adapter Interface ───────────────────────────
@@ -117,6 +135,7 @@ export type ChannelEventMap = {
   'message:outbound': OutboundMessage;
   'message:chunk':    StreamChunk;
   'message:status':   StatusEvent;
+  'message:error':    StreamErrorEvent;
   'channel:connected':    { platform: ChannelPlatform };
   'channel:disconnected': { platform: ChannelPlatform; reason?: string };
   'channel:error':        { platform: ChannelPlatform; error: string };
@@ -281,8 +300,13 @@ export class ChannelManager {
   }
 
   /** Emit a status lifecycle event (processing/completed/failed) */
-  emitStatus(platform: ChannelPlatform, to: string, status: string): void {
+  emitStatus(platform: ChannelPlatform, to: string, status: StreamStatus): void {
     this.emit('message:status', { platform, to, status });
+  }
+
+  /** Emit a terminal streaming error event */
+  emitError(event: StreamErrorEvent): void {
+    this.emit('message:error', event);
   }
 
   // ── Events ──────────────────────────────────────────

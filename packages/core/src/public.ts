@@ -64,6 +64,10 @@ export type {
   ChannelState,
   OutboundMessage,
   StreamChunk,
+  StatusEvent,
+  StreamStatus,
+  StreamErrorEvent,
+  StreamErrorCode,
 } from './channels/index.js';
 
 // WebChat transport (first real channel implementation)

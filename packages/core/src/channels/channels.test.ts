@@ -488,7 +488,7 @@ describe('Gateway', () => {
     await gw.stop();
   });
 
-  it('streaming: mid-stream failure does not silently stitch fallback', async () => {
+  it('streaming: post-token failure emits error event, no fallback stitching', async () => {
     const failingRouter = {
       async *chatStreaming() {
         yield { type: 'text' as const, text: 'partial' };
@@ -501,7 +501,7 @@ describe('Gateway', () => {
       inferenceRouter: failingRouter as any,
     });
 
-    // Register fallback route handler
+    // Register fallback route handler — should NOT be used for post-token failure
     gw.route({
       handler: async () => 'emergency fallback',
     });
@@ -516,18 +516,33 @@ describe('Gateway', () => {
     const outbound: string[] = [];
     gw.getManager().on('message:outbound', (msg) => outbound.push(msg.content));
 
+    const errors: Array<{ code: string; message: string; retryable: boolean }> = [];
+    gw.getManager().on('message:error', (evt) => {
+      errors.push({ code: evt.code, message: evt.message, retryable: evt.retryable });
+    });
+
+    const statuses: string[] = [];
+    gw.getManager().on('message:status', (evt) => statuses.push(evt.status));
+
     const adapter = gw.getManager().getWebChat()!;
     adapter.injectMessage('user1', 'test');
     await new Promise(r => setTimeout(r, 50));
 
-    // Mid-stream error: chatStreaming throws, Gateway catches and does fallback
-    // Fallback handler produces clean output (no mix of partial + fallback)
+    // Post-token failure: no fallback stitching
+    // Outbound fires with empty content (sendSafe for HTTP safety)
     expect(outbound).toHaveLength(1);
-    expect(outbound[0]).toBe('emergency fallback');
+    expect(outbound[0]).toBe('');
 
-    // The fallback chunk should be clean
-    const fallbackChunk = chunks.find(c => c.content === 'emergency fallback');
-    expect(fallbackChunk).toBeDefined();
+    // Fallback content "emergency fallback" should NOT appear
+    expect(chunks.find(c => c.content === 'emergency fallback')).toBeUndefined();
+
+    // Error event should be emitted
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe('INFERENCE_STREAM_FAILED');
+    expect(errors[0].retryable).toBe(true);
+
+    // Status lifecycle: processing → failed (not completed)
+    expect(statuses).toEqual(['processing', 'failed']);
 
     await gw.stop();
   });
@@ -650,6 +665,188 @@ describe('Gateway', () => {
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).toEqual({ content: 'fallback reply', final: true });
     expect(outbound).toEqual(['fallback reply']);
+
+    await gw.stop();
+  });
+});
+
+// ── Round 9: True Incremental Streaming Tests ──────────────
+
+describe('Gateway — incremental streaming (Round 9)', () => {
+  it('chunks are emitted during stream, not after completion', async () => {
+    // A slow async generator that yields tokens with delays
+    const mockRouter = {
+      async *chatStreaming() {
+        yield { type: 'text' as const, text: 'A' };
+        await new Promise(r => setTimeout(r, 20));
+        yield { type: 'text' as const, text: 'B' };
+        await new Promise(r => setTimeout(r, 20));
+        yield { type: 'text' as const, text: 'C' };
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: mockRouter as any,
+    });
+
+    await gw.start();
+
+    const chunkTimings: Array<{ content: string; time: number }> = [];
+    const startTime = Date.now();
+    gw.getManager().on('message:chunk', (chunk) => {
+      chunkTimings.push({ content: chunk.content, time: Date.now() - startTime });
+    });
+
+    let outboundTime = 0;
+    gw.getManager().on('message:outbound', () => {
+      outboundTime = Date.now() - startTime;
+    });
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'hello');
+    await new Promise(r => setTimeout(r, 150));
+
+    // 3 chunks: A, B, C
+    expect(chunkTimings).toHaveLength(3);
+
+    // Key assertion: first chunk (A) must arrive BEFORE the outbound message
+    // With old full-buffering, all chunks would arrive at the same time as outbound
+    expect(chunkTimings[0].time).toBeLessThan(outboundTime);
+
+    // Chunks arrive incrementally, not all at once
+    // First chunk (A) should arrive before third chunk (C)
+    expect(chunkTimings[0].time).toBeLessThan(chunkTimings[2].time);
+
+    await gw.stop();
+  });
+
+  it('one-chunk holdback: final=true only on last chunk', async () => {
+    const mockRouter = {
+      async *chatStreaming() {
+        yield { type: 'text' as const, text: 'X' };
+        yield { type: 'text' as const, text: 'Y' };
+        yield { type: 'text' as const, text: 'Z' };
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: mockRouter as any,
+    });
+
+    await gw.start();
+
+    const chunks: Array<{ content: string; index: number; final: boolean }> = [];
+    gw.getManager().on('message:chunk', (chunk) => {
+      chunks.push({ content: chunk.content, index: chunk.index, final: chunk.final });
+    });
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'hello');
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(chunks).toEqual([
+      { content: 'X', index: 0, final: false },
+      { content: 'Y', index: 1, final: false },
+      { content: 'Z', index: 2, final: true },
+    ]);
+
+    await gw.stop();
+  });
+
+  it('single-token stream: one chunk with final=true', async () => {
+    const mockRouter = {
+      async *chatStreaming() {
+        yield { type: 'text' as const, text: 'Only' };
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: mockRouter as any,
+    });
+
+    await gw.start();
+
+    const chunks: Array<{ content: string; final: boolean }> = [];
+    gw.getManager().on('message:chunk', (chunk) => {
+      chunks.push({ content: chunk.content, final: chunk.final });
+    });
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'hello');
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual({ content: 'Only', final: true });
+
+    await gw.stop();
+  });
+
+  it('post-token failure: status lifecycle is processing → failed', async () => {
+    const failingRouter = {
+      async *chatStreaming() {
+        yield { type: 'text' as const, text: 'begun' };
+        yield { type: 'text' as const, text: 'more' };
+        throw new Error('provider died');
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: failingRouter as any,
+    });
+
+    await gw.start();
+
+    const statuses: string[] = [];
+    gw.getManager().on('message:status', (evt) => statuses.push(evt.status));
+
+    const errors: Array<{ code: string }> = [];
+    gw.getManager().on('message:error', (evt) => errors.push({ code: evt.code }));
+
+    const outbound: string[] = [];
+    gw.getManager().on('message:outbound', (msg) => outbound.push(msg.content));
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'test');
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(statuses).toEqual(['processing', 'failed']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe('INFERENCE_STREAM_FAILED');
+    // HTTP doesn't hang — outbound was sent
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0]).toBe('');
+
+    await gw.stop();
+  });
+
+  it('error event is session-scoped, no cross-session leakage', async () => {
+    const failingRouter = {
+      async *chatStreaming() {
+        yield { type: 'text' as const, text: 'data' };
+        throw new Error('crash');
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: failingRouter as any,
+    });
+
+    await gw.start();
+
+    const errorTargets: string[] = [];
+    gw.getManager().on('message:error', (evt) => errorTargets.push(evt.to));
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('session-A', 'test');
+    await new Promise(r => setTimeout(r, 50));
+
+    // Error should only target session-A
+    expect(errorTargets).toEqual(['session-A']);
 
     await gw.stop();
   });

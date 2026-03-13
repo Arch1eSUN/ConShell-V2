@@ -1,6 +1,6 @@
 # 🐢 ConShell V2 — 开发日志 (DEVLOG)
 
-> **最后更新**: 2026-03-13 (Round 8)
+> **最后更新**: 2026-03-13 (Round 9)
 > **用途**: 提供给 LLM (GPT/Claude) 快速理解项目全貌，生成下一步开发计划。
 
 ---
@@ -15,7 +15,7 @@
 
 - **语言**: TypeScript（strict mode）
 - **包管理**: pnpm monorepo
-- **测试**: vitest（28 个测试文件，429 个测试用例）
+- **测试**: vitest（28 个测试文件，434 个测试用例）
 - **构建**: tsc
 - **CI**: GitHub Actions
 
@@ -205,6 +205,91 @@ emitStatus(evt: StatusEvent): void;
 
 ---
 
+### Round 9 — True Incremental Streaming + Terminal Failure Semantics
+
+**目标**: 实现真实增量 streaming（token 级实时推送）+ 显式终止失败语义，消除 Round 8 的 buffer-then-emit 模式。
+
+#### 9a — One-Chunk Holdback 策略
+
+`routeWithInference()` 完整重写：
+
+- **策略**: 持有一个 pending chunk，当下一个 chunk 到达时立刻 emit 前一个（`final=false`）
+- 流结束时，emit 最后一个 pending chunk（`final=true`）
+- 实现了真正的增量推送（对比 Round 8 的 collect-all-then-emit）
+- 单 token 流 → 直接 `final=true`
+- 零 text → 0 chunks + 空 outbound
+
+#### 9b — Pre/Post-Token 失败分离
+
+`routeStreamingMessage()` 重写为两条分支：
+
+**Pre-token failure**（chunksEmitted = 0 且无 pendingChunk）:
+- 允许 fallback 到 route handlers
+- 用户无感知
+
+**Post-token failure**（有 token 被观测到）:
+- ❌ 不允许 fallback stitching（防止混合输出）
+- ✅ emit `StreamErrorEvent`（`message:error` 事件）
+- ✅ 发送空 outbound（HTTP 不 hang）
+- ✅ status → `failed`
+
+通过 `_chunksEmitted` 属性附加到 error 对象上实现分支判断，包含 holdback 中未 flush 的 pending chunk 计数。
+
+#### 9c — StreamErrorEvent + emitError()
+
+新增类型与方法：
+
+```typescript
+type StreamStatus = 'processing' | 'completed' | 'failed';
+type StreamErrorCode = 'INFERENCE_STREAM_FAILED' | 'CHANNEL_ERROR' | 'TIMEOUT';
+
+interface StreamErrorEvent {
+  platform: ChannelPlatform;
+  to: string;
+  code: StreamErrorCode;
+  message: string;
+  retryable: boolean;
+}
+
+// ChannelEventMap 新增
+'message:error': StreamErrorEvent;
+
+// ChannelManager 新增方法
+emitError(event: StreamErrorEvent): void;
+```
+
+`StatusEvent.status` 从 `string` 收窄为 `StreamStatus` literal union。
+
+#### 9d — Push Bridge Error 桥接
+
+`WebChatPushBridge` 新增 `message:error` 监听器 → 自动将 error 事件推送到对应 session 的 WS 客户端。
+
+包含 `errorHandler` 字段和完整的 cleanup 生命周期。
+
+#### 9e — Public API 导出
+
+新增 4 个类型导出：`StatusEvent`, `StreamStatus`, `StreamErrorEvent`, `StreamErrorCode`
+
+#### 9f — 测试矩阵更新
+
+| 测试场景 | 状态 |
+|----------|------|
+| 增量推送时序 — chunks 在 stream 期间而非完成后到达 | ✅ |
+| one-chunk holdback — `final=true` 仅在最后一个 chunk | ✅ |
+| 单 token stream — 1 chunk `final=true` | ✅ |
+| post-token failure — error event + `status:failed` + 空 outbound | ✅ |
+| post-token failure — 不触发 fallback stitching | ✅ |
+| error event session 隔离 — 无跨 session 泄漏 | ✅ |
+| pre-token failure — 干净 fallback（保持 Round 8 行为）| ✅ |
+| zero-text / no-handler / fallback 测试（保持 Round 8 通过）| ✅ |
+
+#### 9g — 验证结果
+
+- `tsc --noEmit` → **0 errors**
+- `vitest run` → **28 files, 434 tests, all passed**（+5 新增、1 更新）
+
+---
+
 ## 4. 当前 Public API 目录
 
 以下是 `@conshell/core/public` 导出的稳定接口：
@@ -215,7 +300,7 @@ emitStatus(evt: StatusEvent): void;
 | **Config** | `loadConfig`, `createLogger`, `AppConfig`, `InferenceMode`, `InterfaceMode` |
 | **Core Types** | `AgentState`, `SecurityLevel`, `Cents`, `toCents`, `ZERO_CENTS`, `Message`, `ToolCallRequest`, `ToolResult` |
 | **Channels** | `ChannelManager`, `WebChatAdapter`, `WebChatTransport`, `WebChatPushBridge`, `validateRequest` |
-| **Channel Types** | `ChannelAdapter`, `ChannelConfig`, `ChannelMessage`, `ChannelPlatform`, `ChannelState`, `OutboundMessage`, `StreamChunk` |
+| **Channel Types** | `ChannelAdapter`, `ChannelConfig`, `ChannelMessage`, `ChannelPlatform`, `ChannelState`, `OutboundMessage`, `StreamChunk`, `StatusEvent`, `StreamStatus`, `StreamErrorEvent`, `StreamErrorCode` |
 | **Plugins** | `PluginManager`, `validateManifest`, `PluginManifest`, `PluginPermission`, `PluginHook`, `PluginState` |
 | **Policy** | `PolicyContext`, `PolicyResult` |
 | **Constitution** | `THREE_LAWS`, `CONSTITUTION_HASH`, `ConstitutionLaw` |
@@ -276,7 +361,7 @@ core/src/
 
 | 测试文件 | 测试数 | 关注领域 |
 |----------|--------|----------|
-| `channels.test.ts` | 37 | 适配器、ChannelManager、Gateway、Streaming 协议 |
+| `channels.test.ts` | 42 | 适配器、ChannelManager、Gateway、Streaming 协议 |
 | `webchat-e2e.test.ts` | 26 | WebChat HTTP 全栈 E2E |
 | `automaton.test.ts` | 25 | Conway Automaton 核心 |
 | `constitution.test.ts` | 20 | 三大法则合规 |
@@ -304,7 +389,7 @@ core/src/
 | `compute.test.ts` | 4 | 算力管理 |
 | `git.test.ts` | 4 | Git 操作 |
 | `f4-f6.test.ts` | 32 | 集成测试 |
-| **合计** | **429** | |
+| **合计** | **434** | |
 
 ---
 
@@ -329,9 +414,10 @@ ws://host:port/ws
 | type | payload | 说明 |
 |------|---------|------|
 | `subscribed` | `{ sessionId }` | 订阅确认 |
-| `status` | `{ sessionId, status }` | 处理状态更新 |
-| `chunk` | `{ sessionId, content, index, final }` | Token 级流式推送 |
+| `status` | `{ sessionId, status }` | 处理状态更新 (`processing`/`completed`/`failed`) |
+| `chunk` | `{ sessionId, content, index, final }` | Token 级流式推送（增量实时）|
 | `message` | `{ sessionId, platform, content, ... }` | 完整消息推送 |
+| `error` | `{ sessionId, code, message, retryable }` | 流式错误通知 |
 | `pong` | — | 心跳响应 |
 
 ### 流式推送时序
@@ -342,10 +428,17 @@ Client             Server
   │←── subscribed ──│
   │                   │ (inbound message arrives)
   │←── status ───────│  { status: "processing" }
-  │←── chunk ────────│  { content: "Hello ", index: 0, final: false }
+  │←── chunk ────────│  { content: "Hello ", index: 0, final: false }  ← 增量实时推送
   │←── chunk ────────│  { content: "World", index: 1, final: true }
   │←── message ──────│  { content: "Hello World" }  (complete)
   │←── status ───────│  { status: "completed" }
+
+--- 失败场景 ---
+  │←── status ───────│  { status: "processing" }
+  │←── chunk ────────│  { content: "partial", index: 0, final: false }
+  │       ⚡ inference provider 崩溃
+  │←── error ────────│  { code: "INFERENCE_STREAM_FAILED", retryable: true }
+  │←── status ───────│  { status: "failed" }
 ```
 
 ---
@@ -414,4 +507,4 @@ pnpm --filter @conshell/dashboard dev
 875e324 feat: initial commit — engineering baseline restored
 ```
 
-**最新 commit (pending)**: `feat: streaming protocol hardening`
+**最新 commit (pending)**: `feat: true incremental streaming + terminal failure semantics`

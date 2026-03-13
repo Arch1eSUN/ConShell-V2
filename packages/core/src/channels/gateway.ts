@@ -12,7 +12,7 @@ import type { Logger, Message } from '../types/common.js';
 import type { InferenceRouter } from '../inference/index.js';
 import type {
   ChannelPlatform, ChannelConfig, ChannelMessage, OutboundMessage,
-  ChannelAdapter, ChannelState,
+  ChannelAdapter, ChannelState, StreamErrorCode,
 } from './index.js';
 import { ChannelManager } from './index.js';
 import { TelegramAdapter } from './adapters/telegram.js';
@@ -249,6 +249,10 @@ export class Gateway {
    * - chunk.content is always non-empty
    * - last content chunk has final=true
    * - outbound message fires exactly once (even for zero-text)
+   *
+   * Failure semantics (Round 9):
+   * - Pre-first-token failure: fallback to route handlers is allowed
+   * - Post-first-token failure: no fallback stitching, emit error event + failed status
    */
   private async routeStreamingMessage(msg: ChannelMessage): Promise<void> {
     const target = msg.groupId ?? msg.from;
@@ -259,21 +263,46 @@ export class Gateway {
     // ── Real inference streaming path ──
     if (this.inferenceRouter) {
       try {
-        await this.routeWithInference(msg, target);
+        const result = await this.routeWithInference(msg, target);
+        // Successful — send final outbound
+        await this.send({
+          platform: msg.platform,
+          to: target,
+          content: result.fullText,
+          replyTo: msg.id,
+        });
         this.manager.emitStatus(msg.platform, target, 'completed');
       } catch (err) {
         this.stats.errors++;
         this.logger.error('Inference streaming error', { error: String(err) });
-        // Try fallback route handlers
-        try {
-          await this.routeFallback(msg, target);
-          this.manager.emitStatus(msg.platform, target, 'completed');
-        } catch (fallbackErr) {
-          this.stats.errors++;
-          this.logger.error('Fallback also failed', { error: String(fallbackErr) });
-          // Ensure outbound fires so HTTP doesn't hang
+
+        // Check if any chunks were already pushed to user
+        const chunksEmitted = (err as any)?._chunksEmitted ?? 0;
+
+        if (chunksEmitted > 0) {
+          // POST-TOKEN FAILURE: user already saw partial output.
+          // No fallback stitching allowed. Emit error event + failed status.
+          this.manager.emitError({
+            platform: msg.platform,
+            to: target,
+            code: 'INFERENCE_STREAM_FAILED' as StreamErrorCode,
+            message: String(err instanceof Error ? err.message : err),
+            retryable: true,
+          });
+          // Still send outbound so HTTP doesn't hang (empty = terminal failure)
           await this.sendSafe(msg.platform, target, '', msg.id);
           this.manager.emitStatus(msg.platform, target, 'failed');
+        } else {
+          // PRE-TOKEN FAILURE: no visible output yet. Fallback allowed.
+          try {
+            await this.routeFallback(msg, target);
+            this.manager.emitStatus(msg.platform, target, 'completed');
+          } catch (fallbackErr) {
+            this.stats.errors++;
+            this.logger.error('Fallback also failed', { error: String(fallbackErr) });
+            await this.sendSafe(msg.platform, target, '', msg.id);
+            this.manager.emitStatus(msg.platform, target, 'failed');
+          }
         }
       }
       return;
@@ -292,13 +321,24 @@ export class Gateway {
   }
 
   /**
-   * Real inference-backed streaming.
+   * Real inference-backed streaming with one-chunk holdback.
    *
-   * Uses chatStreaming() which enforces pre/post-token failover policy.
-   * Emits non-empty chunks only. Last content chunk has final=true.
-   * Always sends outbound message exactly once (even for zero-text).
+   * Strategy: keep one pending chunk in memory. When the next chunk arrives,
+   * emit the previous one as final=false. At end-of-stream, emit the last
+   * pending chunk as final=true.
+   *
+   * This achieves:
+   * - True incremental chunk delivery (one-token latency only)
+   * - Correct final flag semantics (only last chunk is final=true)
+   * - No empty final markers
+   *
+   * Returns { chunksEmitted, fullText } for the caller.
+   * On error, attaches _chunksEmitted to the thrown error for failure branching.
    */
-  private async routeWithInference(msg: ChannelMessage, target: string): Promise<void> {
+  private async routeWithInference(
+    msg: ChannelMessage,
+    target: string,
+  ): Promise<{ chunksEmitted: number; fullText: string }> {
     const router = this.inferenceRouter!;
     const messages: Message[] = [];
 
@@ -310,36 +350,55 @@ export class Gateway {
     const model = this.config.defaultModel ?? 'gpt-4';
     let fullText = '';
     let chunkIndex = 0;
+    let chunksEmitted = 0;
 
-    // Collect all text chunks (with non-final flag initially)
-    const pendingChunks: Array<{ content: string; index: number }> = [];
+    // One-chunk holdback: keep current pending, emit previous
+    let pendingChunk: { content: string; index: number } | null = null;
 
-    for await (const chunk of router.chatStreaming(messages, { model })) {
-      if (chunk.type === 'text' && chunk.text) {
-        fullText += chunk.text;
-        pendingChunks.push({ content: chunk.text, index: chunkIndex++ });
+    try {
+      for await (const chunk of router.chatStreaming(messages, { model })) {
+        if (chunk.type === 'text' && chunk.text) {
+          fullText += chunk.text;
+
+          if (pendingChunk !== null) {
+            // Emit previous chunk immediately (not final)
+            this.manager.emitChunk({
+              platform: msg.platform,
+              to: target,
+              content: pendingChunk.content,
+              index: pendingChunk.index,
+              final: false,
+            });
+            chunksEmitted++;
+          }
+
+          // Holdback current chunk
+          pendingChunk = { content: chunk.text, index: chunkIndex++ };
+        }
       }
+    } catch (err) {
+      // Attach token-seen count to error for failure branching in caller.
+      // Include pendingChunk (token received but not yet emitted due to holdback)
+      // so caller knows text was observed even if not yet pushed to WS.
+      const tokensSeen = chunksEmitted + (pendingChunk !== null ? 1 : 0);
+      const wrapped = err instanceof Error ? err : new Error(String(err));
+      (wrapped as any)._chunksEmitted = tokensSeen;
+      throw wrapped;
     }
 
-    // Emit chunks: all non-final except last which is final=true
-    for (let i = 0; i < pendingChunks.length; i++) {
-      const isLast = i === pendingChunks.length - 1;
+    // Stream completed — emit last pending chunk as final=true
+    if (pendingChunk !== null) {
       this.manager.emitChunk({
         platform: msg.platform,
         to: target,
-        content: pendingChunks[i].content,
-        index: pendingChunks[i].index,
-        final: isLast,
+        content: pendingChunk.content,
+        index: pendingChunk.index,
+        final: true,
       });
+      chunksEmitted++;
     }
 
-    // Always send outbound message (zero-text → content: '')
-    await this.send({
-      platform: msg.platform,
-      to: target,
-      content: fullText,
-      replyTo: msg.id,
-    });
+    return { chunksEmitted, fullText };
   }
 
   /**

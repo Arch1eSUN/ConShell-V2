@@ -13,7 +13,7 @@
  *   - 不复制 transport 逻辑
  */
 import type { WebSocketServer } from '../../server/websocket.js';
-import type { ChannelManager, OutboundMessage, StreamChunk, StatusEvent } from '../index.js';
+import type { ChannelManager, OutboundMessage, StreamChunk, StatusEvent, StreamErrorEvent } from '../index.js';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -39,6 +39,8 @@ export class WebChatPushBridge {
   private chunkHandler: ((chunk: StreamChunk) => void) | null = null;
   /** status event handler reference (for cleanup) */
   private statusHandler: ((evt: StatusEvent) => void) | null = null;
+  /** error event handler reference (for cleanup) */
+  private errorHandler: ((evt: StreamErrorEvent) => void) | null = null;
 
   private started = false;
 
@@ -153,6 +155,24 @@ export class WebChatPushBridge {
     };
 
     this.channelManager.on('message:status', this.statusHandler);
+
+    // Bridge error events to WebSocket push
+    this.errorHandler = (evt: StreamErrorEvent) => {
+      if (evt.platform !== 'webchat') return;
+      if (!evt.to) return;
+
+      this.pushToSession(evt.to, {
+        type: 'error',
+        data: {
+          sessionId: evt.to,
+          code: evt.code,
+          message: evt.message,
+          retryable: evt.retryable,
+        },
+      });
+    };
+
+    this.channelManager.on('message:error', this.errorHandler);
   }
 
   stop(): void {
@@ -170,6 +190,10 @@ export class WebChatPushBridge {
     if (this.statusHandler) {
       this.channelManager.off('message:status', this.statusHandler);
       this.statusHandler = null;
+    }
+    if (this.errorHandler) {
+      this.channelManager.off('message:error', this.errorHandler);
+      this.errorHandler = null;
     }
 
     this.sessions.clear();
