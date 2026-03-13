@@ -11,7 +11,7 @@
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import type { CheckResult, ExecutionEvidence } from '../index.js';
+import type { CheckResult, ExecutionEvidence, ExecutionResult, RuntimeIdentity } from '../index.js';
 
 /**
  * Recursively find all *.test.ts files under a directory.
@@ -147,37 +147,127 @@ export function checkTestBoundary(coreRoot: string): CheckResult[] {
 }
 
 /**
+ * Return type for checkExecutionEvidence — carries both checks AND alignment metadata
+ * so the gate can use runtimeAligned without re-parsing checks.
+ */
+export interface EvidenceAlignmentResult {
+  checks: CheckResult[];
+  runtimeAligned: boolean;
+  runtimeMismatchDetail: string;
+}
+
+/**
+ * Check if execution evidence is stale (>24h old).
+ */
+function isStale(timestamp: string): boolean {
+  try {
+    const ts = new Date(timestamp).getTime();
+    const now = Date.now();
+    return (now - ts) > 24 * 60 * 60 * 1000;
+  } catch {
+    return true; // Unparseable timestamp = stale
+  }
+}
+
+/**
+ * Check if an ExecutionResult's runtime identity matches the current runtime.
+ * Returns null if aligned, or a mismatch description string if not.
+ */
+function checkRuntimeAlignment(
+  result: ExecutionResult,
+  current: RuntimeIdentity,
+): string | null {
+  const mismatches: string[] = [];
+  if (result.nodeVersion && result.nodeVersion !== current.nodeVersion) {
+    mismatches.push(`nodeVersion: evidence=${result.nodeVersion} current=${current.nodeVersion}`);
+  }
+  if (result.nodeAbi && result.nodeAbi !== current.nodeAbi) {
+    mismatches.push(`nodeAbi: evidence=${result.nodeAbi} current=${current.nodeAbi}`);
+  }
+  if (result.platform && result.platform !== current.platform) {
+    mismatches.push(`platform: evidence=${result.platform} current=${current.platform}`);
+  }
+  if (result.arch && result.arch !== current.arch) {
+    mismatches.push(`arch: evidence=${result.arch} current=${current.arch}`);
+  }
+  return mismatches.length > 0 ? mismatches.join('; ') : null;
+}
+
+/**
  * Produce check results from externally-provided execution evidence (Route B).
  *
- * When evidence is absent, checks report 'unknown' status which signals
- * to the ReadinessGate that execution truth is missing. The gate will
- * then degrade its verdict to 'insufficient-evidence'.
+ * Round 14.3: Now accepts RuntimeIdentity to cross-check evidence against
+ * the current runtime. Returns EvidenceAlignmentResult with alignment metadata.
  *
- * When evidence is present, checks use 'test-execution' evidenceType
- * and report pass/fail based on the structured results.
+ * When evidence runtime doesn't match current runtime → blocker.
+ * When evidence is stale (>24h) → warning.
+ * When evidence is absent → unknown status.
  */
-export function checkExecutionEvidence(evidence?: ExecutionEvidence): CheckResult[] {
-  const results: CheckResult[] = [];
+export function checkExecutionEvidence(
+  evidence?: ExecutionEvidence,
+  currentRuntime?: RuntimeIdentity,
+): EvidenceAlignmentResult {
+  const checks: CheckResult[] = [];
+  let runtimeAligned = true;
+  let runtimeMismatchDetail = '';
 
   // EX1: Vitest execution
   if (evidence?.vitest) {
     const v = evidence.vitest;
-    const passed = v.exitCode === 0 && v.failed === 0;
-    results.push({
-      id: 'tests-vitest-execution',
-      label: 'Vitest Execution Result',
-      category: 'tests',
-      severity: passed ? 'info' : 'blocker',
-      status: passed ? 'pass' : 'fail',
-      summary: passed
-        ? `${v.passed}/${v.total} tests passed (exit ${v.exitCode}). ${v.summary}`
-        : `${v.failed}/${v.total} tests FAILED (exit ${v.exitCode}). ${v.summary}`,
-      evidence: `Command: ${v.command} | Exit: ${v.exitCode} | Passed: ${v.passed} | Failed: ${v.failed} | Total: ${v.total} | At: ${v.timestamp}`,
-      confidence: 'high',
-      evidenceType: 'test-execution',
-    });
+    const execPassed = v.exitCode === 0 && v.failed === 0;
+    const stale = isStale(v.timestamp);
+
+    // Check runtime alignment
+    let mismatch: string | null = null;
+    if (currentRuntime) {
+      mismatch = checkRuntimeAlignment(v, currentRuntime);
+      if (mismatch) {
+        runtimeAligned = false;
+        runtimeMismatchDetail = `vitest: ${mismatch}`;
+      }
+    }
+
+    if (mismatch) {
+      checks.push({
+        id: 'tests-vitest-execution',
+        label: 'Vitest Execution Result',
+        category: 'tests',
+        severity: 'blocker',
+        status: 'fail',
+        summary: `REJECTED: Evidence from foreign runtime. ${mismatch}. Re-run vitest in the current runtime to produce valid evidence.`,
+        evidence: `Command: ${v.command} | Runtime mismatch: ${mismatch}`,
+        confidence: 'high',
+        evidenceType: 'test-execution',
+      });
+    } else if (stale) {
+      checks.push({
+        id: 'tests-vitest-execution',
+        label: 'Vitest Execution Result',
+        category: 'tests',
+        severity: 'warning',
+        status: 'warn',
+        summary: `STALE: Evidence is >24h old (${v.timestamp}). ${v.passed}/${v.total} tests passed when run. Re-run vitest to refresh.`,
+        evidence: `Command: ${v.command} | Timestamp: ${v.timestamp} | Stale: true`,
+        confidence: 'medium',
+        evidenceType: 'test-execution',
+      });
+    } else {
+      checks.push({
+        id: 'tests-vitest-execution',
+        label: 'Vitest Execution Result',
+        category: 'tests',
+        severity: execPassed ? 'info' : 'blocker',
+        status: execPassed ? 'pass' : 'fail',
+        summary: execPassed
+          ? `${v.passed}/${v.total} tests passed (exit ${v.exitCode}). ${v.summary}`
+          : `${v.failed}/${v.total} tests FAILED (exit ${v.exitCode}). ${v.summary}`,
+        evidence: `Command: ${v.command} | Exit: ${v.exitCode} | Passed: ${v.passed} | Failed: ${v.failed} | Total: ${v.total} | At: ${v.timestamp}`,
+        confidence: 'high',
+        evidenceType: 'test-execution',
+      });
+    }
   } else {
-    results.push({
+    checks.push({
       id: 'tests-vitest-execution',
       label: 'Vitest Execution Result',
       category: 'tests',
@@ -188,27 +278,70 @@ export function checkExecutionEvidence(evidence?: ExecutionEvidence): CheckResul
       confidence: 'low',
       evidenceType: 'test-execution',
     });
+    runtimeAligned = false;
+    runtimeMismatchDetail = runtimeMismatchDetail || 'No execution evidence provided';
   }
 
   // EX2: TypeScript typecheck execution
   if (evidence?.tsc) {
     const t = evidence.tsc;
-    const passed = t.exitCode === 0 && t.failed === 0;
-    results.push({
-      id: 'build-tsc-execution',
-      label: 'TypeScript Typecheck Result',
-      category: 'build',
-      severity: passed ? 'info' : 'blocker',
-      status: passed ? 'pass' : 'fail',
-      summary: passed
-        ? `tsc --noEmit passed (0 errors). ${t.summary}`
-        : `tsc --noEmit FAILED (${t.failed} errors, exit ${t.exitCode}). ${t.summary}`,
-      evidence: `Command: ${t.command} | Exit: ${t.exitCode} | Errors: ${t.failed} | At: ${t.timestamp}`,
-      confidence: 'high',
-      evidenceType: 'test-execution',
-    });
+    const execPassed = t.exitCode === 0 && t.failed === 0;
+    const stale = isStale(t.timestamp);
+
+    // Check runtime alignment
+    let mismatch: string | null = null;
+    if (currentRuntime) {
+      mismatch = checkRuntimeAlignment(t, currentRuntime);
+      if (mismatch) {
+        runtimeAligned = false;
+        const detail = `tsc: ${mismatch}`;
+        runtimeMismatchDetail = runtimeMismatchDetail
+          ? `${runtimeMismatchDetail}; ${detail}`
+          : detail;
+      }
+    }
+
+    if (mismatch) {
+      checks.push({
+        id: 'build-tsc-execution',
+        label: 'TypeScript Typecheck Result',
+        category: 'build',
+        severity: 'blocker',
+        status: 'fail',
+        summary: `REJECTED: Evidence from foreign runtime. ${mismatch}. Re-run tsc in the current runtime.`,
+        evidence: `Command: ${t.command} | Runtime mismatch: ${mismatch}`,
+        confidence: 'high',
+        evidenceType: 'test-execution',
+      });
+    } else if (stale) {
+      checks.push({
+        id: 'build-tsc-execution',
+        label: 'TypeScript Typecheck Result',
+        category: 'build',
+        severity: 'warning',
+        status: 'warn',
+        summary: `STALE: Evidence is >24h old (${t.timestamp}). Re-run tsc to refresh.`,
+        evidence: `Command: ${t.command} | Timestamp: ${t.timestamp} | Stale: true`,
+        confidence: 'medium',
+        evidenceType: 'test-execution',
+      });
+    } else {
+      checks.push({
+        id: 'build-tsc-execution',
+        label: 'TypeScript Typecheck Result',
+        category: 'build',
+        severity: execPassed ? 'info' : 'blocker',
+        status: execPassed ? 'pass' : 'fail',
+        summary: execPassed
+          ? `tsc --noEmit passed (0 errors). ${t.summary}`
+          : `tsc --noEmit FAILED (${t.failed} errors, exit ${t.exitCode}). ${t.summary}`,
+        evidence: `Command: ${t.command} | Exit: ${t.exitCode} | Errors: ${t.failed} | At: ${t.timestamp}`,
+        confidence: 'high',
+        evidenceType: 'test-execution',
+      });
+    }
   } else {
-    results.push({
+    checks.push({
       id: 'build-tsc-execution',
       label: 'TypeScript Typecheck Result',
       category: 'build',
@@ -219,9 +352,13 @@ export function checkExecutionEvidence(evidence?: ExecutionEvidence): CheckResul
       confidence: 'low',
       evidenceType: 'test-execution',
     });
+    if (!evidence?.vitest) {
+      // Both missing — already set above
+    } else {
+      runtimeAligned = false;
+      runtimeMismatchDetail = runtimeMismatchDetail || 'tsc evidence missing';
+    }
   }
 
-  return results;
+  return { checks, runtimeAligned, runtimeMismatchDetail };
 }
-
-

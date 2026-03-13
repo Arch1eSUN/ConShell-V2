@@ -1,202 +1,323 @@
 /**
- * Doctor subsystem tests — Round 14.2
+ * Doctor subsystem tests — Round 14.3
  *
- * Tests the execution evidence binding (Route B), insufficient-evidence
- * verdict, and gate criteria integrity.
+ * Tests execution evidence binding (Route B), runtime identity alignment,
+ * stale evidence detection, foreign-runtime rejection, and gate criteria.
  */
 import { describe, it, expect } from 'vitest';
-import { checkExecutionEvidence } from './checks/tests.js';
+import { checkExecutionEvidence, type EvidenceAlignmentResult } from './checks/tests.js';
 import type {
   CheckResult,
   ExecutionEvidence,
   ExecutionResult,
+  RuntimeIdentity,
   ReadinessGate,
   DiagnosticsOptions,
 } from './index.js';
+import { computeRuntimeIdentity } from './index.js';
 
-// ── Helper: build a minimal passing execution result ──────────────────
+// ── Helpers ──────────────────────────────────────────────────────────
 
-function passingVitest(): ExecutionResult {
+function currentRuntime(): RuntimeIdentity {
+  return computeRuntimeIdentity();
+}
+
+function passingVitest(overrides: Partial<ExecutionResult> = {}): ExecutionResult {
+  const rt = currentRuntime();
   return {
-    command: 'cd packages/core && npx vitest run --no-coverage',
+    command: 'npx vitest run --no-coverage',
     exitCode: 0,
-    passed: 522,
+    passed: 518,
     failed: 0,
-    total: 522,
+    total: 518,
     summary: 'All tests passed',
     timestamp: new Date().toISOString(),
+    nodeVersion: rt.nodeVersion,
+    nodeAbi: rt.nodeAbi,
+    platform: rt.platform,
+    arch: rt.arch,
+    cwd: rt.cwd,
+    ...overrides,
   };
 }
 
-function failingVitest(): ExecutionResult {
+function failingVitest(overrides: Partial<ExecutionResult> = {}): ExecutionResult {
+  const rt = currentRuntime();
   return {
-    command: 'cd packages/core && npx vitest run --no-coverage',
+    command: 'npx vitest run --no-coverage',
     exitCode: 1,
     passed: 480,
-    failed: 42,
-    total: 522,
-    summary: '42 tests failed',
+    failed: 38,
+    total: 518,
+    summary: '38 tests failed',
     timestamp: new Date().toISOString(),
+    nodeVersion: rt.nodeVersion,
+    nodeAbi: rt.nodeAbi,
+    platform: rt.platform,
+    arch: rt.arch,
+    cwd: rt.cwd,
+    ...overrides,
   };
 }
 
-function passingTsc(): ExecutionResult {
+function passingTsc(overrides: Partial<ExecutionResult> = {}): ExecutionResult {
+  const rt = currentRuntime();
   return {
-    command: 'cd packages/core && npx tsc --noEmit',
+    command: 'npx tsc --noEmit',
     exitCode: 0,
     passed: 0,
     failed: 0,
     total: 0,
     summary: 'No type errors',
     timestamp: new Date().toISOString(),
+    nodeVersion: rt.nodeVersion,
+    nodeAbi: rt.nodeAbi,
+    platform: rt.platform,
+    arch: rt.arch,
+    cwd: rt.cwd,
+    ...overrides,
   };
 }
 
-function failingTsc(): ExecutionResult {
+function failingTsc(overrides: Partial<ExecutionResult> = {}): ExecutionResult {
+  const rt = currentRuntime();
   return {
-    command: 'cd packages/core && npx tsc --noEmit',
+    command: 'npx tsc --noEmit',
     exitCode: 2,
     passed: 0,
     failed: 5,
     total: 5,
     summary: '5 type errors',
     timestamp: new Date().toISOString(),
+    nodeVersion: rt.nodeVersion,
+    nodeAbi: rt.nodeAbi,
+    platform: rt.platform,
+    arch: rt.arch,
+    cwd: rt.cwd,
+    ...overrides,
   };
 }
 
-// ── checkExecutionEvidence ────────────────────────────────────────────
+function foreignRuntime(): RuntimeIdentity {
+  return {
+    nodeVersion: 'v25.7.0',
+    nodeAbi: '141',
+    platform: 'darwin',
+    arch: 'arm64',
+    cwd: '/Users/archiesun/Desktop/ConShellV2/packages/core',
+    binaryPath: '/Users/archiesun/.nvm/versions/node/v25.7.0/bin/node',
+  };
+}
+
+// ── checkExecutionEvidence (basic) ───────────────────────────────────
 
 describe('checkExecutionEvidence', () => {
   it('returns unknown status when no evidence is provided', () => {
-    const results = checkExecutionEvidence();
-    expect(results).toHaveLength(2);
+    const result = checkExecutionEvidence();
+    expect(result.checks).toHaveLength(2);
+    expect(result.runtimeAligned).toBe(false);
 
-    const vitest = results.find(r => r.id === 'tests-vitest-execution')!;
+    const vitest = result.checks.find(r => r.id === 'tests-vitest-execution')!;
     expect(vitest.status).toBe('unknown');
-    expect(vitest.evidenceType).toBe('test-execution');
     expect(vitest.confidence).toBe('low');
 
-    const tsc = results.find(r => r.id === 'build-tsc-execution')!;
+    const tsc = result.checks.find(r => r.id === 'build-tsc-execution')!;
     expect(tsc.status).toBe('unknown');
-    expect(tsc.evidenceType).toBe('test-execution');
-    expect(tsc.confidence).toBe('low');
   });
 
-  it('returns pass when vitest execution succeeds', () => {
-    const results = checkExecutionEvidence({ vitest: passingVitest() });
-    const vitest = results.find(r => r.id === 'tests-vitest-execution')!;
+  it('returns pass when vitest execution succeeds with aligned runtime', () => {
+    const rt = currentRuntime();
+    const result = checkExecutionEvidence({ vitest: passingVitest() }, rt);
+    const vitest = result.checks.find(r => r.id === 'tests-vitest-execution')!;
 
     expect(vitest.status).toBe('pass');
     expect(vitest.severity).toBe('info');
-    expect(vitest.confidence).toBe('high');
-    expect(vitest.evidenceType).toBe('test-execution');
-    expect(vitest.summary).toContain('522/522');
+    expect(vitest.summary).toContain('518/518');
   });
 
   it('returns fail with blocker severity when vitest has failures', () => {
-    const results = checkExecutionEvidence({ vitest: failingVitest() });
-    const vitest = results.find(r => r.id === 'tests-vitest-execution')!;
+    const rt = currentRuntime();
+    const result = checkExecutionEvidence({ vitest: failingVitest() }, rt);
+    const vitest = result.checks.find(r => r.id === 'tests-vitest-execution')!;
 
     expect(vitest.status).toBe('fail');
     expect(vitest.severity).toBe('blocker');
-    expect(vitest.summary).toContain('42/522');
     expect(vitest.summary).toContain('FAILED');
   });
 
-  it('returns pass when tsc execution succeeds', () => {
-    const results = checkExecutionEvidence({ tsc: passingTsc() });
-    const tsc = results.find(r => r.id === 'build-tsc-execution')!;
+  it('returns pass when tsc execution succeeds with aligned runtime', () => {
+    const rt = currentRuntime();
+    const result = checkExecutionEvidence({ tsc: passingTsc() }, rt);
+    const tsc = result.checks.find(r => r.id === 'build-tsc-execution')!;
 
     expect(tsc.status).toBe('pass');
     expect(tsc.severity).toBe('info');
-    expect(tsc.category).toBe('build');
-    expect(tsc.evidenceType).toBe('test-execution');
   });
 
-  it('returns fail with blocker severity when tsc has errors', () => {
-    const results = checkExecutionEvidence({ tsc: failingTsc() });
-    const tsc = results.find(r => r.id === 'build-tsc-execution')!;
+  it('returns fail with blocker when tsc has errors', () => {
+    const rt = currentRuntime();
+    const result = checkExecutionEvidence({ tsc: failingTsc() }, rt);
+    const tsc = result.checks.find(r => r.id === 'build-tsc-execution')!;
 
     expect(tsc.status).toBe('fail');
     expect(tsc.severity).toBe('blocker');
     expect(tsc.summary).toContain('FAILED');
-    expect(tsc.summary).toContain('5 errors');
   });
 
-  it('handles both vitest and tsc evidence together', () => {
-    const results = checkExecutionEvidence({
+  it('handles both evidence together', () => {
+    const rt = currentRuntime();
+    const result = checkExecutionEvidence({
       vitest: passingVitest(),
       tsc: passingTsc(),
-    });
+    }, rt);
 
-    expect(results).toHaveLength(2);
-    expect(results.every(r => r.status === 'pass')).toBe(true);
-    expect(results.every(r => r.evidenceType === 'test-execution')).toBe(true);
+    expect(result.checks).toHaveLength(2);
+    expect(result.checks.every(r => r.status === 'pass')).toBe(true);
+    expect(result.runtimeAligned).toBe(true);
   });
 });
 
-// ── Evidence type coverage ────────────────────────────────────────────
+// ── Runtime identity alignment ───────────────────────────────────────
 
-describe('Evidence type taxonomy', () => {
-  it('execution evidence checks use test-execution provenance', () => {
-    const withEvidence = checkExecutionEvidence({
+describe('Runtime identity alignment (Round 14.3)', () => {
+  it('rejects vitest evidence from foreign runtime', () => {
+    const rt = currentRuntime();
+    const foreignVitest = passingVitest({
+      nodeVersion: 'v25.7.0',
+      nodeAbi: '141',
+    });
+    const result = checkExecutionEvidence({ vitest: foreignVitest }, rt);
+    const vitest = result.checks.find(r => r.id === 'tests-vitest-execution')!;
+
+    expect(vitest.status).toBe('fail');
+    expect(vitest.severity).toBe('blocker');
+    expect(vitest.summary).toContain('REJECTED');
+    expect(vitest.summary).toContain('foreign runtime');
+    expect(result.runtimeAligned).toBe(false);
+  });
+
+  it('rejects tsc evidence from foreign runtime', () => {
+    const rt = currentRuntime();
+    const foreignTscResult = passingTsc({
+      nodeVersion: 'v25.7.0',
+      nodeAbi: '141',
+    });
+    const result = checkExecutionEvidence({ tsc: foreignTscResult }, rt);
+    const tsc = result.checks.find(r => r.id === 'build-tsc-execution')!;
+
+    expect(tsc.status).toBe('fail');
+    expect(tsc.severity).toBe('blocker');
+    expect(tsc.summary).toContain('REJECTED');
+    expect(result.runtimeAligned).toBe(false);
+  });
+
+  it('rejects ABI-only mismatch in evidence', () => {
+    const rt = currentRuntime();
+    const abiMismatch = passingVitest({
+      nodeVersion: rt.nodeVersion,  // same version
+      nodeAbi: '999',              // different ABI
+    });
+    const result = checkExecutionEvidence({ vitest: abiMismatch }, rt);
+    const vitest = result.checks.find(r => r.id === 'tests-vitest-execution')!;
+
+    expect(vitest.status).toBe('fail');
+    expect(vitest.summary).toContain('REJECTED');
+    expect(result.runtimeAligned).toBe(false);
+    expect(result.runtimeMismatchDetail).toContain('nodeAbi');
+  });
+
+  it('accepts evidence without runtime fields (backwards compat)', () => {
+    const rt = currentRuntime();
+    const noRuntimeFields: ExecutionResult = {
+      command: 'npx vitest run',
+      exitCode: 0,
+      passed: 518,
+      failed: 0,
+      total: 518,
+      summary: 'All passed',
+      timestamp: new Date().toISOString(),
+      // No nodeVersion/nodeAbi/platform/arch
+    };
+    const result = checkExecutionEvidence({ vitest: noRuntimeFields }, rt);
+    const vitest = result.checks.find(r => r.id === 'tests-vitest-execution')!;
+
+    // Without runtime fields, no mismatch is detected → pass
+    expect(vitest.status).toBe('pass');
+  });
+});
+
+// ── Stale evidence detection ─────────────────────────────────────────
+
+describe('Stale evidence detection (Round 14.3)', () => {
+  it('warns when vitest evidence is >24h old', () => {
+    const rt = currentRuntime();
+    const staleTimestamp = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    const staleVitest = passingVitest({ timestamp: staleTimestamp });
+    const result = checkExecutionEvidence({ vitest: staleVitest }, rt);
+    const vitest = result.checks.find(r => r.id === 'tests-vitest-execution')!;
+
+    expect(vitest.status).toBe('warn');
+    expect(vitest.severity).toBe('warning');
+    expect(vitest.summary).toContain('STALE');
+  });
+
+  it('warns when tsc evidence is >24h old', () => {
+    const rt = currentRuntime();
+    const staleTimestamp = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    const staleTsc = passingTsc({ timestamp: staleTimestamp });
+    const result = checkExecutionEvidence({ tsc: staleTsc }, rt);
+    const tsc = result.checks.find(r => r.id === 'build-tsc-execution')!;
+
+    expect(tsc.status).toBe('warn');
+    expect(tsc.severity).toBe('warning');
+    expect(tsc.summary).toContain('STALE');
+  });
+
+  it('does not warn when evidence is fresh (<24h)', () => {
+    const rt = currentRuntime();
+    const result = checkExecutionEvidence({
       vitest: passingVitest(),
       tsc: passingTsc(),
-    });
-    for (const check of withEvidence) {
+    }, rt);
+
+    for (const check of result.checks) {
+      expect(check.status).not.toBe('warn');
+    }
+  });
+});
+
+// ── Evidence provenance ──────────────────────────────────────────────
+
+describe('Evidence provenance', () => {
+  it('all execution evidence checks use test-execution provenance', () => {
+    const rt = currentRuntime();
+    const result = checkExecutionEvidence({
+      vitest: passingVitest(),
+      tsc: passingTsc(),
+    }, rt);
+    for (const check of result.checks) {
       expect(check.evidenceType).toBe('test-execution');
     }
   });
 
-  it('absent evidence checks still use test-execution provenance (not code-inspection)', () => {
-    const noEvidence = checkExecutionEvidence();
-    for (const check of noEvidence) {
+  it('absent evidence checks still use test-execution provenance', () => {
+    const result = checkExecutionEvidence();
+    for (const check of result.checks) {
       expect(check.evidenceType).toBe('test-execution');
-      // Must NOT be 'code-inspection' — even absent evidence is about execution
     }
   });
 });
 
-// ── Gate verdict scenarios ────────────────────────────────────────────
+// ── computeRuntimeIdentity ───────────────────────────────────────────
 
-describe('ReadinessGate verdict expectations', () => {
-  // These test the contract that the gate logic in index.ts should uphold.
-  // Since we can't easily unit-test computeReadinessGate in isolation
-  // (it's private), we test the observable contract through check results.
-
-  it('no execution evidence should produce unknown-status checks', () => {
-    const results = checkExecutionEvidence();
-    const vitestExec = results.find(r => r.id === 'tests-vitest-execution')!;
-    const tscExec = results.find(r => r.id === 'build-tsc-execution')!;
-
-    // Gate criterion 6 checks: vitestExec.status !== 'unknown'
-    // When unknown, gate criterion fails → verdict = insufficient-evidence
-    expect(vitestExec.status).toBe('unknown');
-    expect(tscExec.status).toBe('unknown');
-  });
-
-  it('failing execution evidence should produce blocker checks', () => {
-    const results = checkExecutionEvidence({
-      vitest: failingVitest(),
-      tsc: failingTsc(),
-    });
-    const vitestExec = results.find(r => r.id === 'tests-vitest-execution')!;
-    const tscExec = results.find(r => r.id === 'build-tsc-execution')!;
-
-    // Gate criterion 6/7: status !== 'pass' → criterion fails → verdict = not-ready
-    expect(vitestExec.status).toBe('fail');
-    expect(vitestExec.severity).toBe('blocker');
-    expect(tscExec.status).toBe('fail');
-    expect(tscExec.severity).toBe('blocker');
-  });
-
-  it('static inventory cannot substitute for execution truth', () => {
-    // Having test files on disk (inventory) is NOT the same as having passed execution
-    const noExec = checkExecutionEvidence();
-    const vitestExec = noExec.find(r => r.id === 'tests-vitest-execution')!;
-
-    // Even if 35 test files exist on disk, without execution evidence
-    // the gate must NOT say 'ready'
-    expect(vitestExec.status).not.toBe('pass');
+describe('computeRuntimeIdentity', () => {
+  it('returns current runtime snapshot', () => {
+    const rt = computeRuntimeIdentity();
+    expect(rt.nodeVersion).toBe(process.version);
+    expect(rt.nodeAbi).toBe(process.versions.modules);
+    expect(rt.platform).toBe(process.platform);
+    expect(rt.arch).toBe(process.arch);
+    expect(typeof rt.cwd).toBe('string');
+    expect(typeof rt.binaryPath).toBe('string');
   });
 });

@@ -1,7 +1,7 @@
 /**
  * Environment checks — Node version, package manager, workspace root.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CheckResult } from '../index.js';
 
@@ -55,6 +55,62 @@ export function checkEnvironment(projectRoot: string): CheckResult[] {
     confidence: 'high',
     evidenceType: 'fs-scan',
   });
+
+  // E3b: Runtime pin alignment (.nvmrc content vs process.version)
+  const pinFile = nvmrcExists
+    ? join(projectRoot, '.nvmrc')
+    : nodeVersionExists
+      ? join(projectRoot, '.node-version')
+      : null;
+
+  if (pinFile) {
+    try {
+      const pinnedVersion = readFileSync(pinFile, 'utf-8').trim();
+      const currentVersion = process.version;
+      // Normalize: .nvmrc may have "v" prefix or not
+      const normalizedPinned = pinnedVersion.startsWith('v')
+        ? pinnedVersion
+        : `v${pinnedVersion}`;
+      const aligned = normalizedPinned === currentVersion;
+      results.push({
+        id: 'env-runtime-pin-alignment',
+        label: 'Runtime Pin Alignment',
+        category: 'env',
+        severity: aligned ? 'info' : 'blocker',
+        status: aligned ? 'pass' : 'fail',
+        summary: aligned
+          ? `Current runtime ${currentVersion} matches pinned ${normalizedPinned}.`
+          : `MISMATCH: Current runtime ${currentVersion} ≠ pinned ${normalizedPinned}. Run \`nvm use\` or switch Node to match the project pin.`,
+        evidence: `Pinned: ${normalizedPinned} (from ${pinFile}), Current: ${currentVersion}`,
+        confidence: 'high',
+        evidenceType: 'runtime-probe',
+      });
+    } catch {
+      results.push({
+        id: 'env-runtime-pin-alignment',
+        label: 'Runtime Pin Alignment',
+        category: 'env',
+        severity: 'warning',
+        status: 'warn',
+        summary: 'Could not read pin file to verify runtime alignment.',
+        evidence: `Failed to read ${pinFile}`,
+        confidence: 'low',
+        evidenceType: 'fs-scan',
+      });
+    }
+  } else {
+    results.push({
+      id: 'env-runtime-pin-alignment',
+      label: 'Runtime Pin Alignment',
+      category: 'env',
+      severity: 'warning',
+      status: 'warn',
+      summary: 'No .nvmrc or .node-version file — cannot verify runtime alignment.',
+      evidence: 'No pin file exists',
+      confidence: 'low',
+      evidenceType: 'fs-scan',
+    });
+  }
 
   // E3: workspace root validity
   const packageJsonExists = existsSync(join(projectRoot, 'package.json'));

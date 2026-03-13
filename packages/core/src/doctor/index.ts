@@ -13,6 +13,10 @@
  *   Route B: Doctor does not execute commands — it accepts structured
  *   execution results from the caller. When absent, verdict degrades to
  *   insufficient-evidence. This prevents false-positive readiness.
+ * Round 14.3: Runtime identity binding — ExecutionResult carries runtime
+ *   identity (nodeVersion, nodeAbi, platform, arch, cwd) so Doctor can
+ *   cross-check evidence against the current runtime. Foreign-runtime
+ *   evidence is rejected. Runtime pinning enforced via .nvmrc.
  */
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -60,6 +64,30 @@ export interface ReadinessGate {
   rationale: string;
 }
 
+// ── Runtime Identity ──────────────────────────────────────────────────
+
+/** Snapshot of runtime identity for cross-checking */
+export interface RuntimeIdentity {
+  nodeVersion: string;
+  nodeAbi: string;
+  platform: string;
+  arch: string;
+  cwd: string;
+  binaryPath: string;
+}
+
+/** Get the current runtime identity */
+export function computeRuntimeIdentity(): RuntimeIdentity {
+  return {
+    nodeVersion: process.version,
+    nodeAbi: process.versions.modules,
+    platform: process.platform,
+    arch: process.arch,
+    cwd: process.cwd(),
+    binaryPath: process.execPath,
+  };
+}
+
 // ── Execution Evidence (Route B) ──────────────────────────────────────
 
 /** Result from running a trusted command externally */
@@ -78,6 +106,17 @@ export interface ExecutionResult {
   summary: string;
   /** ISO-8601 timestamp of execution */
   timestamp: string;
+  // ── Runtime identity (Round 14.3) ──
+  /** Node version that produced this result */
+  nodeVersion?: string;
+  /** Node ABI that produced this result */
+  nodeAbi?: string;
+  /** Platform that produced this result */
+  platform?: string;
+  /** Architecture that produced this result */
+  arch?: string;
+  /** Working directory that produced this result */
+  cwd?: string;
 }
 
 /** Structured results from external trusted command execution */
@@ -135,7 +174,7 @@ export interface CommandPanel {
 
 import { checkEnvironment } from './checks/env.js';
 import { checkDependencies } from './checks/deps.js';
-import { checkTestBoundary, checkExecutionEvidence } from './checks/tests.js';
+import { checkTestBoundary, checkExecutionEvidence, type EvidenceAlignmentResult } from './checks/tests.js';
 import { checkBuildReadiness } from './checks/build.js';
 import { checkIntegrations } from './checks/integrations.js';
 
@@ -155,6 +194,9 @@ export async function runDiagnostics(
 ): Promise<IntegrityReport> {
   const checks: CheckResult[] = [];
 
+  // Compute current runtime identity
+  const currentRuntime = computeRuntimeIdentity();
+
   // Run all check categories
   checks.push(...checkEnvironment(projectRoot));
   checks.push(...checkDependencies(projectRoot, coreRoot));
@@ -162,8 +204,9 @@ export async function runDiagnostics(
   checks.push(...checkBuildReadiness(coreRoot));
   checks.push(...(await checkIntegrations()));
 
-  // Add execution evidence checks (Route B)
-  checks.push(...checkExecutionEvidence(options?.executionEvidence));
+  // Add execution evidence checks (Route B) with runtime cross-check
+  const execResults = checkExecutionEvidence(options?.executionEvidence, currentRuntime);
+  checks.push(...execResults.checks);
 
   // Compute counts
   const counts = {
@@ -188,7 +231,7 @@ export async function runDiagnostics(
   };
 
   // Build readiness gate (includes execution evidence criteria)
-  const readiness = computeReadinessGate(checks, counts);
+  const readiness = computeReadinessGate(checks, counts, execResults);
 
   return {
     timestamp: new Date().toISOString(),
@@ -212,6 +255,7 @@ export async function runDiagnostics(
 function computeReadinessGate(
   checks: CheckResult[],
   counts: { blocker: number; warning: number },
+  execResults: EvidenceAlignmentResult,
 ): ReadinessGate {
   const criteria: GateCriterion[] = [];
 
@@ -279,6 +323,23 @@ function computeReadinessGate(
       : tscExec?.summary ?? 'unknown',
   });
 
+  // Criterion 8: Runtime pin alignment (.nvmrc vs current)
+  const pinCheck = checks.find(c => c.id === 'env-runtime-pin-alignment');
+  criteria.push({
+    name: 'Runtime pin alignment',
+    pass: pinCheck?.status === 'pass',
+    note: pinCheck?.summary ?? 'No runtime pin check — .nvmrc may be missing',
+  });
+
+  // Criterion 9: Evidence runtime identity alignment
+  criteria.push({
+    name: 'Evidence runtime alignment',
+    pass: execResults.runtimeAligned,
+    note: execResults.runtimeAligned
+      ? 'Evidence runtime matches current runtime'
+      : execResults.runtimeMismatchDetail || 'Evidence runtime mismatch or not provided',
+  });
+
   // Determine verdict
   const executionEvidenceMissing = !hasVitestEvidence || !hasTscEvidence;
   const allPass = criteria.every(c => c.pass);
@@ -287,9 +348,13 @@ function computeReadinessGate(
   let verdict: ReadinessGate['verdict'];
   let rationale: string;
 
-  if (executionEvidenceMissing && criteria.filter(c => !c.pass).length === (executionEvidenceMissing ? criteria.filter(c => !c.pass).length : 0)) {
-    // If the ONLY failures are missing execution evidence, verdict is insufficient-evidence
-    const nonExecFails = criteria.filter(c => !c.pass && c.name !== 'Test execution evidence' && c.name !== 'Typecheck execution evidence');
+  if (executionEvidenceMissing) {
+    const nonExecFails = criteria.filter(c =>
+      !c.pass &&
+      c.name !== 'Test execution evidence' &&
+      c.name !== 'Typecheck execution evidence' &&
+      c.name !== 'Evidence runtime alignment'
+    );
     if (nonExecFails.length === 0) {
       verdict = 'insufficient-evidence';
       const missing: string[] = [];
@@ -303,10 +368,10 @@ function computeReadinessGate(
     }
   } else if (allPass && warningCount === 0) {
     verdict = 'ready';
-    rationale = 'All gate criteria pass with execution evidence. No warnings. Ready for feature expansion.';
+    rationale = 'All gate criteria pass with aligned execution evidence. No warnings. Ready for autonomous capability development.';
   } else if (allPass && warningCount > 0) {
     verdict = 'conditionally-ready';
-    rationale = `All gate criteria pass with execution evidence but ${warningCount} warning(s) exist. Feature expansion is possible but warnings should be triaged.`;
+    rationale = `All gate criteria pass with aligned execution evidence but ${warningCount} warning(s) exist. Expansion possible but warnings should be triaged.`;
   } else {
     verdict = 'not-ready';
     const failed = criteria.filter(c => !c.pass).map(c => c.name);
