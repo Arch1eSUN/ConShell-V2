@@ -126,4 +126,47 @@ describe('InferenceRouter', () => {
     const result = await router.chatComplete([], { model: 'llama3' });
     expect(result.text).toBe('ollama');
   });
+
+  it('handles mid-stream provider failure with failover', async () => {
+    // Primary provider that fails mid-stream
+    const failingProvider: InferenceProvider = {
+      id: 'failing',
+      name: 'Failing Provider',
+      async *chat() {
+        yield { type: 'text' as const, text: 'partial' };
+        throw new Error('connection reset');
+      },
+      async listModels() { return ['model']; },
+      estimateCost() { return ZERO_CENTS; },
+    };
+
+    // Fallback that works
+    const fallbackChunks: StreamChunk[] = [
+      { type: 'text', text: 'recovered' },
+    ];
+
+    router.register(failingProvider);
+    router.register(makeProvider('fallback', fallbackChunks));
+    router.setFallbackChain(['fallback']);
+
+    const result = await router.chatComplete([], { model: 'test' });
+    // chatComplete accumulates text from partial primary + full fallback
+    expect(result.text).toBe('partialrecovered');
+  });
+
+  it('streams done chunk without error', async () => {
+    const chunks: StreamChunk[] = [
+      { type: 'text', text: 'Hi' },
+      { type: 'done' },
+    ];
+    router.register(makeProvider('openai', chunks));
+
+    const collected: StreamChunk[] = [];
+    for await (const chunk of router.chat([], { model: 'gpt-4' })) {
+      collected.push(chunk);
+    }
+    expect(collected).toHaveLength(2);
+    expect(collected[0].type).toBe('text');
+    expect(collected[1].type).toBe('done');
+  });
 });

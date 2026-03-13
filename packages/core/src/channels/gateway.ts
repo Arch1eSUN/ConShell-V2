@@ -8,7 +8,8 @@
  * - 消息速率限制
  * - 统一日志和指标
  */
-import type { Logger } from '../types/common.js';
+import type { Logger, Message } from '../types/common.js';
+import type { InferenceRouter } from '../inference/index.js';
 import type {
   ChannelPlatform, ChannelConfig, ChannelMessage, OutboundMessage,
   ChannelAdapter, ChannelState,
@@ -32,6 +33,12 @@ export interface GatewayConfig {
   autoReconnect?: boolean;
   /** Max reconnect attempts per channel */
   maxReconnectAttempts?: number;
+  /** Optional inference router for real streaming (when absent, falls back to route handlers) */
+  inferenceRouter?: InferenceRouter;
+  /** Default model for inference streaming (default: 'gpt-4') */
+  defaultModel?: string;
+  /** Default system prompt for inference streaming */
+  defaultSystemPrompt?: string;
 }
 
 export interface GatewayStats {
@@ -61,6 +68,7 @@ export class Gateway {
   private healthTimer: ReturnType<typeof setTimeout> | null = null;
   private startTime = 0;
   private stats = { inbound: 0, outbound: 0, errors: 0 };
+  private inferenceRouter: InferenceRouter | null;
 
   // Rate limiting
   private messageTimestamps: number[] = [];
@@ -73,6 +81,7 @@ export class Gateway {
       child: function() { return this; },
     };
     this.manager = new ChannelManager({ logger: this.logger });
+    this.inferenceRouter = config.inferenceRouter ?? null;
   }
 
   // ── Lifecycle ──────────────────────────────────────────
@@ -232,13 +241,97 @@ export class Gateway {
   }
 
   /**
-   * Stream-aware message routing — emits word-level chunks via emitChunk()
-   * before sending the complete message via send().
+   * Stream-aware message routing.
    *
-   * This allows WebSocket subscribers to receive token-by-token updates
-   * while the HTTP endpoint still returns the complete response.
+   * When inferenceRouter is available → real token-level streaming via
+   * InferenceRouter.chat() AsyncIterable. Each inference text chunk is
+   * emitted as a channel chunk event for WS push.
+   *
+   * When inferenceRouter is absent → falls back to route.handler() and
+   * emits a single synthetic chunk + final message.
+   *
+   * In both paths the HTTP loop resolves with the complete message.
    */
   private async routeStreamingMessage(msg: ChannelMessage): Promise<void> {
+    const target = msg.groupId ?? msg.from;
+
+    // ── Real inference streaming path ──
+    if (this.inferenceRouter) {
+      try {
+        await this.routeWithInference(msg, target);
+      } catch (err) {
+        this.stats.errors++;
+        this.logger.error('Inference streaming error', { error: String(err) });
+        // Fallback: try route handlers
+        await this.routeFallback(msg, target);
+      }
+      return;
+    }
+
+    // ── Fallback: no inference router ──
+    await this.routeFallback(msg, target);
+  }
+
+  /**
+   * Real inference-backed streaming.
+   * Consumes InferenceRouter.chat() AsyncIterable and emits channel chunks.
+   */
+  private async routeWithInference(msg: ChannelMessage, target: string): Promise<void> {
+    const router = this.inferenceRouter!;
+    const messages: Message[] = [];
+
+    // Add system prompt if configured
+    if (this.config.defaultSystemPrompt) {
+      messages.push({ role: 'system', content: this.config.defaultSystemPrompt });
+    }
+
+    messages.push({ role: 'user', content: msg.content });
+
+    const model = this.config.defaultModel ?? 'gpt-4';
+    let fullText = '';
+    let chunkIndex = 0;
+
+    for await (const chunk of router.chat(messages, { model })) {
+      if (chunk.type === 'text' && chunk.text) {
+        fullText += chunk.text;
+        this.manager.emitChunk({
+          platform: msg.platform,
+          to: target,
+          content: chunk.text,
+          index: chunkIndex++,
+          final: false,
+        });
+      }
+      // usage/tool_call/done chunks are consumed but not forwarded as channel chunks
+    }
+
+    // Emit final chunk marker
+    if (chunkIndex > 0) {
+      this.manager.emitChunk({
+        platform: msg.platform,
+        to: target,
+        content: '',
+        index: chunkIndex,
+        final: true,
+      });
+    }
+
+    // Send complete outbound message (resolves HTTP + fires outbound event)
+    if (fullText) {
+      await this.send({
+        platform: msg.platform,
+        to: target,
+        content: fullText,
+        replyTo: msg.id,
+      });
+    }
+  }
+
+  /**
+   * Fallback path: use route handlers (non-streaming).
+   * Emits a single synthetic chunk then the full message.
+   */
+  private async routeFallback(msg: ChannelMessage, target: string): Promise<void> {
     for (const route of this.routes) {
       if (route.from && route.from !== msg.platform) continue;
       if (route.pattern && !route.pattern.test(msg.content)) continue;
@@ -246,21 +339,16 @@ export class Gateway {
       try {
         const reply = await route.handler(msg);
         if (reply) {
-          const target = msg.groupId ?? msg.from;
+          // Emit single synthetic chunk (replaces old word-splitting mock)
+          this.manager.emitChunk({
+            platform: msg.platform,
+            to: target,
+            content: reply,
+            index: 0,
+            final: true,
+          });
 
-          // Emit word-level chunks
-          const tokens = reply.split(' ');
-          for (let i = 0; i < tokens.length; i++) {
-            this.manager.emitChunk({
-              platform: msg.platform,
-              to: target,
-              content: tokens[i] + (i < tokens.length - 1 ? ' ' : ''),
-              index: i,
-              final: i === tokens.length - 1,
-            });
-          }
-
-          // Send complete message (HTTP loop + outbound event)
+          // Send complete message
           await this.send({
             platform: msg.platform,
             to: target,
@@ -270,7 +358,7 @@ export class Gateway {
         }
       } catch (err) {
         this.stats.errors++;
-        this.logger.error('Streaming route handler error', { error: String(err) });
+        this.logger.error('Fallback route handler error', { error: String(err) });
       }
     }
   }

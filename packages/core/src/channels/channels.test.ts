@@ -405,4 +405,138 @@ describe('Gateway', () => {
 
     await gw.stop();
   });
+
+  // ── Inference Streaming Integration ─────────────────────
+
+  it('streams real inference chunks through Gateway', async () => {
+    // Build a mock InferenceRouter that yields real text chunks
+    const mockInferenceRouter = {
+      async *chat() {
+        yield { type: 'text' as const, text: 'Hello' };
+        yield { type: 'text' as const, text: ' World' };
+        yield { type: 'done' as const };
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: mockInferenceRouter as any,
+      defaultModel: 'test-model',
+    });
+
+    await gw.start();
+
+    // Collect chunk events
+    const chunks: Array<{ content: string; index: number; final: boolean }> = [];
+    gw.getManager().on('message:chunk', (chunk) => {
+      chunks.push({ content: chunk.content, index: chunk.index, final: chunk.final });
+    });
+
+    // Collect outbound messages
+    const outbound: string[] = [];
+    gw.getManager().on('message:outbound', (msg) => {
+      outbound.push(msg.content);
+    });
+
+    // Inject a webchat message — triggers routeWithInference
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'tell me something');
+
+    // Allow async processing
+    await new Promise(r => setTimeout(r, 50));
+
+    // Verify chunks arrived in order
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks[0]).toEqual({ content: 'Hello', index: 0, final: false });
+    expect(chunks[1]).toEqual({ content: ' World', index: 1, final: false });
+    // Final chunk marker
+    const finalChunk = chunks.find(c => c.final);
+    expect(finalChunk).toBeDefined();
+    expect(finalChunk!.index).toBe(2);
+
+    // Verify complete outbound message
+    expect(outbound).toContain('Hello World');
+
+    await gw.stop();
+  });
+
+  it('falls back to synthetic single chunk when no inference router', async () => {
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      // No inferenceRouter — will use fallback
+    });
+
+    // Register a simple route handler
+    gw.route({
+      handler: async () => 'fallback reply',
+    });
+
+    await gw.start();
+
+    const chunks: Array<{ content: string; final: boolean }> = [];
+    gw.getManager().on('message:chunk', (chunk) => {
+      chunks.push({ content: chunk.content, final: chunk.final });
+    });
+
+    const outbound: string[] = [];
+    gw.getManager().on('message:outbound', (msg) => {
+      outbound.push(msg.content);
+    });
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'hello');
+
+    await new Promise(r => setTimeout(r, 50));
+
+    // Fallback: single synthetic chunk (not word-split mock)
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual({ content: 'fallback reply', final: true });
+    expect(outbound).toContain('fallback reply');
+
+    await gw.stop();
+  });
+
+  it('falls back to route handler when inference fails', async () => {
+    // Inference router that always throws
+    const failingRouter = {
+      async *chat() {
+        throw new Error('inference provider unreachable');
+        yield; // make it a generator
+      },
+    };
+
+    const gw = new Gateway({
+      channels: [{ platform: 'webchat', enabled: true }],
+      inferenceRouter: failingRouter as any,
+    });
+
+    // Register fallback route handler
+    gw.route({
+      handler: async () => 'emergency fallback',
+    });
+
+    await gw.start();
+
+    const chunks: Array<{ content: string; final: boolean }> = [];
+    gw.getManager().on('message:chunk', (chunk) => {
+      chunks.push({ content: chunk.content, final: chunk.final });
+    });
+
+    const outbound: string[] = [];
+    gw.getManager().on('message:outbound', (msg) => {
+      outbound.push(msg.content);
+    });
+
+    const adapter = gw.getManager().getWebChat()!;
+    adapter.injectMessage('user1', 'test');
+
+    await new Promise(r => setTimeout(r, 50));
+
+    // Should have fallen back to route handler
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].content).toBe('emergency fallback');
+    expect(outbound).toContain('emergency fallback');
+
+    await gw.stop();
+  });
 });

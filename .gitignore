@@ -10,3 +10,4 @@ dist/
 .DS_Store
 .pnpm-store/
 tmp/
+node_modules*
