@@ -1,6 +1,6 @@
 # 🐢 ConShell V2 — 开发日志 (DEVLOG)
 
-> **最后更新**: 2026-03-13 (Round 10)
+> **最后更新**: 2026-03-13 (Round 11)
 > **用途**: 提供给 LLM (GPT/Claude) 快速理解项目全貌，生成下一步开发计划。
 
 ---
@@ -539,3 +539,37 @@ c3b71a6 feat: true incremental streaming + terminal failure semantics
 | `sessions.test.ts` | 13 | ✅ |
 | `conversation-service.test.ts` | 14 | ✅ |
 | **总计** | **461 / 461** | **✅ 全通过** |
+
+---
+
+## Round 11 — Memory Tools + Spend Persistence (2026-03-13)
+
+**目标**: 修复 G1（工具空壳）和 G2（Spend纯内存不持久化），让 Agent 具备真实的记忆操作能力和经济追踪持久性。
+
+### 交付物
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| memory_store 工具 | `runtime/tools/memory.ts` [NEW] | 存储 fact/episode/relationship 到 MemoryTierManager |
+| memory_recall 工具 | `runtime/tools/memory.ts` [NEW] | 从 3 层记忆构建上下文并返回给 LLM |
+| createMemoryTools 工厂 | `runtime/tools/memory.ts` [NEW] | 需 runtime 注入 MemoryTierManager 实例 |
+| SpendRepository | `state/repos/spend.ts` [NEW] | 连接 spend_tracking 表 (migration v2)，支持 insert/total/daily/hourly/breakdown |
+| SpendTracker 持久化 | `spend/index.ts` | 接受可选 SpendRepository，recordSpend/recordIncome 自动写入 SQLite |
+| 工具导出更新 | `runtime/tools/index.ts` | 添加 createMemoryTools 导出 |
+| Repo 导出更新 | `state/repos/index.ts` | 添加 SpendRepository 导出 |
+
+### 测试
+
+| 测试文件 | 用例数 | 状态 |
+|----------|--------|------|
+| `spend.test.ts` [NEW] | 8 | ⏳ (EPERM) |
+| `memory.test.ts` [NEW] | 11 | ⏳ (EPERM) |
+| `builtin.test.ts` [NEW] | 10 | ⏳ (EPERM) |
+
+> **Note**: 测试因 macOS immutable flags (EPERM) 无法在当前环境执行。需 `sudo chflags -R nouchg /Users/archiesun/Desktop/ConShellV2` 后运行。
+
+### 关键设计决策
+
+1. **Memory 工具使用工厂模式**: `createMemoryTools(memory)` 而非全局导出，因为 MemoryTierManager 需要 runtime（db实例）才能创建
+2. **SpendTracker 向后兼容**: repo 参数可选，不传则退回纯内存模式
+3. **SpendRepository 复用已有表**: spend_tracking 表已在 migration v2 创建，无需新增 migration

@@ -44,3 +44,6 @@ export type { ProviderConfigRow, UpsertProviderConfig } from './provider.js';
 
 export { SessionsRepository } from './sessions.js';
 export type { SessionRow, SessionWithCount } from './sessions.js';
+
+export { SpendRepository } from './spend.js';
+export type { SpendRow, InsertSpend } from './spend.js';

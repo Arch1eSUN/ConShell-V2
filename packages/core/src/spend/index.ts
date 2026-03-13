@@ -7,9 +7,11 @@
  * - 预算上限告警
  * - 收入追踪 (x402 支付接收)
  * - 净收支计算
+ * - 可选 SQLite 持久化 (SpendRepository)
  */
 import type { Cents } from '../types/common.js';
 import { Cents as toCents } from '../types/common.js';
+import type { SpendRepository } from '../state/repos/spend.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -109,9 +111,11 @@ export class SpendTracker {
   private budget: BudgetConfig;
   private alertListeners = new Set<BudgetAlertListener>();
   private idCounter = 0;
+  private repo: SpendRepository | null;
 
-  constructor(budget?: Partial<BudgetConfig>) {
+  constructor(budget?: Partial<BudgetConfig>, repo?: SpendRepository) {
     this.budget = { ...DEFAULT_BUDGET, ...budget };
+    this.repo = repo ?? null;
   }
 
   // ── Record ─────────────────────────────────────────────────────────
@@ -174,6 +178,18 @@ export class SpendTracker {
     };
     this.spendRecords.push(record);
 
+    // Persist to SQLite if repo available
+    if (this.repo) {
+      this.repo.insert({
+        type: 'spend',
+        amountCents: costCents,
+        provider,
+        model: opts?.model,
+        category: opts?.category ?? 'inference',
+        description: opts?.description,
+      });
+    }
+
     // Check low balance
     const balance = this.getBalance();
     if (balance <= 0) {
@@ -208,6 +224,15 @@ export class SpendTracker {
       txHash,
       timestamp: Date.now(),
     });
+
+    // Persist to SQLite if repo available
+    if (this.repo) {
+      this.repo.insert({
+        type: 'income',
+        amountCents,
+        description: `source:${source}${txHash ? ` tx:${txHash}` : ''}`,
+      });
+    }
   }
 
   // ── Queries ────────────────────────────────────────────────────────

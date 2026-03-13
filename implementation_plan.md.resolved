@@ -1,0 +1,398 @@
+# ConShell V2 — 全局开发总计划
+
+> 🐢 Sovereign AI Agent Runtime — 从当前状态到最终完成态的完整路线图
+
+---
+
+## 一、执行摘要
+
+ConShell V2 是一个融合 Conway Automaton（自主AI运行时）和 OpenClaw（个人AI助手）的主权AI Agent运行时，基于 Web4 标准构建。项目采用 pnpm monorepo 3包架构（`core` / `cli` / `dashboard`），目标是创建一个能够自主运行、自我进化、拥有经济主权（x402 支付 + ERC-8004 身份）的AI实体。
+
+**审计结论：** 项目已完成约 **65%** 的设计目标。核心引擎骨架完整，但多个子系统存在"功能声明存在、实际执行为空壳"的问题。从"可演示原型"到"可信赖产品"仍需 **4个大阶段** 的系统性工作。
+
+---
+
+## 二、最终目标定义
+
+### ConShell 最终形态
+
+一个完全自治的 Sovereign AI Agent，具备以下能力：
+
+| 维度 | 完成标准 |
+|------|----------|
+| **运行时** | 11步引导 → ReAct循环 → 心跳守护，可无人值守运行数周 |
+| **推理** | 多Provider failover + 流式输出 + 成本追踪 + 上下文管理 |
+| **记忆** | 3层持久化 (hot/warm/cold) + 语义检索 + 自动晋升 |
+| **经济** | 真实链上钱包 (secp256k1) + x402收付款 + 预算自律 |
+| **身份** | ERC-8004注册 + AgentCard + SIWE认证 + 联邦发现 |
+| **自治** | 自我修改 (git审计) + 自我复制 (子Agent) + Soul演化 |
+| **安全** | 24规则宪法 + Plugin沙箱 + 路径保护 + 速率限制 |
+| **互操作** | MCP Server/Client + A2A (EvoMap) + CLIProxy API |
+| **界面** | CLI REPL + WebUI Dashboard + 消息渠道 (Telegram等) |
+| **可观测** | 结构化日志 + 指标导出 + 审计轨迹 + 健康检查 |
+
+### 什么算"完成"
+
+- 所有声明的工具可以实际执行（非stub）
+- 所有内存数据实际持久化到SQLite
+- 所有类型声明与运行时行为一致
+- 端到端测试覆盖核心用户路径
+- 单人可通过 `npm i -g conshell && conshell onboard` 完成安装运行
+
+### "完成"后什么是新功能
+
+- 新的消息渠道接入（已有渠道不算）
+- 新的工具添加（在工具注册表框架内）
+- 新的推理Provider接入
+- 新的EvoMap基因发布
+- UI主题/布局调整
+
+---
+
+## 三、当前状态审计
+
+### 3.1 模块状态总表
+
+> ✅ 完整可用 | 🔶 骨架可用但有重要缺失 | ⬜ 存在但为空壳 | ❌ 未实现
+
+| 模块 | 状态 | 代码量 | 详情 |
+|------|------|--------|------|
+| **Kernel** | ✅ | 341L | 11步引导序列完整，服务组装正确 |
+| **StateMachine** | ✅ | 128L | 5状态生命周期管理 |
+| **AgentLoop** | ✅ | 237L | ReAct循环完整：Think→Act→Observe→Persist |
+| **PolicyEngine** | ✅ | 409L | 24规则覆盖6大类 |
+| **ToolRegistry** | 🔶 | 935L | 57+工具声明完整，但execute多为stub |
+| **ToolExecutor** | ✅ | 167L | 执行框架完整含超时+截断 |
+| **InferenceRouter** | ✅ | ~400L | 7 provider + failover + cost tracking |
+| **MemoryTierManager** | 🔶 | 251L | 3层架构完整，缺embedding检索 |
+| **SoulSystem** | ✅ | 588L | 自演化+Constitution对齐+diff追踪 |
+| **Wallet** | 🔶 | 297L | 基础加密完整，用SHA-256代替secp256k1 |
+| **X402Server** | ✅ | 298L | 支付中间件完整含double-spend检查 |
+| **Identity** | ✅ | 223L | AgentCard + SIWE + InMemoryRegistry |
+| **SpendTracker** | 🔶 | 340L | 完整追踪逻辑，但纯内存无持久化 |
+| **McpGateway** | ✅ | 270L | JSON-RPC 2.0完整，Stdio transport |
+| **EvoMapClient** | ✅ | 268L | GEP注册+发布+心跳 |
+| **SelfModManager** | ✅ | 233L | git审计+回滚+速率限制 |
+| **MultiAgentManager** | ✅ | 380L | 子Agent生命周期+谱系+消息中继 |
+| **ConversationService** | ✅ | 186L | 会话持久化+上下文构造 |
+| **HeartbeatDaemon** | ✅ | 151L | 定时任务框架 |
+| **TaskQueue** | ✅ | ~150L | 异步任务队列 |
+| **Compute** | ⬜ | 63L | Docker placeholder |
+| **HTTP/WS Server** | ✅ | ~600L | Express + WS + 路由 + 中间件 |
+| **CLI** | ✅ | 155L | 6命令：onboard/start/doctor/daemon/configure/repl |
+| **Dashboard** | 🔶 | 12页面 | 页面存在但部分数据连接不完整 |
+
+### 3.2 测试状态
+
+- **总测试数**：942（截至最新push）
+- **通过率**：941/942（1个pre-existing flaky test in multiagent）
+- **覆盖范围**：state/repos、policy、inference、runtime、wallet、x402、soul、identity、mcp、spend、multiagent
+- **缺失覆盖**：compute、channels、server routes、CLI commands、dashboard
+
+### 3.3 关键差距清单
+
+| # | 差距 | 严重度 | 影响 |
+|---|------|--------|------|
+| **G1** | 57个工具中大量execute为stub | 🔴 Critical | Agent无法实际执行大部分工具 |
+| **G2** | SpendTracker纯内存，重启丢失 | 🔴 Critical | 经济追踪不可靠 |
+| **G3** | Wallet用SHA-256不是secp256k1 | 🟡 High | 无法真实上链 |
+| **G4** | Memory缺embedding语义检索 | 🟡 High | 记忆只能精确匹配 |
+| **G5** | Memory自动晋升(hot→warm→cold)未实现 | 🟡 High | 3层退化为单层 |
+| **G6** | Dashboard数据连接部分断裂 | 🟡 High | 某些页面显示空 |
+| **G7** | Server认证中间件未激活 | 🟡 High | API无保护 |
+| **G8** | WS推送未绑定session持久化 | 🟠 Medium | 实时更新不一致 |
+| **G9** | E2E集成测试不存在 | 🟠 Medium | 无跨模块验证 |
+| **G10** | Compute Docker Provider为stub | 🟠 Medium | 容器计算不可用 |
+| **G11** | 消息渠道(Telegram等)未实现 | 🟠 Medium | 仅支持WebChat |
+| **G12** | multiagent.test.ts存在flaky断言 | 🟢 Low | CI不稳定 |
+| **G13** | Identity Registry仅InMemory | 🟢 Low | 联邦发现无法持久化 |
+
+---
+
+## 四、分阶段开发路线图
+
+### Overview
+
+```
+Phase 1 (Round 11-13):  核心修复 — 让现有声明的功能真正工作
+Phase 2 (Round 14-17):  生产就绪 — 安全、测试、可观测
+Phase 3 (Round 18-21):  能力扩展 — 渠道、联邦、语音
+Phase 4 (Round 22-24):  自治闭环 — 经济自律 + 完全自主运行
+```
+
+---
+
+### Phase 1: 核心修复 — 让声明的功能真正工作
+
+> **目标：** 消除所有 Critical + High 差距，让 Agent 能真正执行工具、持久化数据、真实上链
+
+#### Round 11: 工具实现 + Spend持久化
+
+**目标：** G1 + G2 修复
+
+| 任务 | 文件 | 说明 |
+|------|------|------|
+| 实现 shell_exec 工具 | `runtime/tools/shell.ts` | sandboxed child_process.exec |
+| 实现 file_read/file_write | `runtime/tools/filesystem.ts` | PolicyEngine路径检查 + 读写 |
+| 实现 web_search | `runtime/tools/web.ts` | 调用搜索API或爬虫 |
+| 实现 web_browse | `runtime/tools/web.ts` | fetch + html→text |
+| 实现 http_request | `runtime/tools/http.ts` | 通用HTTP请求 |
+| 实现 memory_* 工具 | `runtime/tools/memory.ts` | 连接MemoryTierManager |
+| SpendTracker持久化 | [spend/index.ts](file:///Users/archiesun/Desktop/ConShellV2/packages/core/src/spend/index.ts) + `state/repos/spend.ts` | 新增spend表 + migration |
+
+**验证：**
+- 每个工具有独立单元测试
+- AgentLoop可以调用工具并获得真实结果
+- SpendTracker重启后数据保留
+
+#### Round 12: 记忆系统升级
+
+**目标：** G4 + G5 修复
+
+| 任务 | 文件 | 说明 |
+|------|------|------|
+| 添加embedding生成 | `memory/embedder.ts` [NEW] | 本地embedding或API |
+| 实现语义检索 | [memory/tier-manager.ts](file:///Users/archiesun/Desktop/ConShellV2/packages/core/src/memory/tier-manager.ts) | cosine similarity搜索 |
+| 实现自动晋升 | [memory/tier-manager.ts](file:///Users/archiesun/Desktop/ConShellV2/packages/core/src/memory/tier-manager.ts) | hot→warm→cold定时迁移 |
+| 心跳集成记忆整理 | [runtime/heartbeat.ts](file:///Users/archiesun/Desktop/ConShellV2/packages/core/src/runtime/heartbeat.ts) | 定时触发晋升任务 |
+| 添加embedding列 | `state/migrations/006_*.ts` | memory表加embedding BLOB |
+
+**验证：**
+- 语义搜索可返回相关记忆
+- hot记忆超过阈值后自动晋升warm
+- 心跳守护正确触发记忆整理
+
+#### Round 13: 钱包升级 + Dashboard数据连通
+
+**目标：** G3 + G6 修复
+
+| 任务 | 文件 | 说明 |
+|------|------|------|
+| 钱包升级secp256k1 | [wallet/index.ts](file:///Users/archiesun/Desktop/ConShellV2/packages/core/src/wallet/index.ts) | 引入noble-secp256k1或viem |
+| 真实地址生成 | [wallet/index.ts](file:///Users/archiesun/Desktop/ConShellV2/packages/core/src/wallet/index.ts) | keccak256(pubkey) |
+| Dashboard API连通 | `dashboard/src/api/*.ts` | 修复断裂的数据连接 |
+| Dashboard WebSocket推送 | `dashboard/src/api/ws.ts` | 绑定session持久化 |
+
+**验证：**
+- 生成的地址与MetaMask/Etherscan兼容
+- Dashboard所有页面显示真实数据
+- WebSocket消息实时更新
+
+---
+
+### Phase 2: 生产就绪 — 安全、测试、可观测
+
+> **目标：** 让系统安全可靠，可经受审计
+
+#### Round 14: 安全加固
+
+**目标：** G7 修复
+
+| 任务 | 说明 |
+|------|------|
+| 激活JWT认证中间件 | `/api/*` 路由保护 |
+| Plugin沙箱完善 | VM隔离 + 资源限制 |
+| CORS配置 | 限定Dashboard origin |
+| 请求体大小限制 | 防DoS |
+| 敏感参数redaction | 审计日志脱敏 |
+
+#### Round 15: 测试体系建设
+
+**目标：** G9 + G12 修复
+
+| 任务 | 说明 |
+|------|------|
+| 修复multiagent flaky test | 消除CI不稳定因素 |
+| E2E集成测试 | Kernel boot → API call → 工具执行 → 结果验证 |
+| Server路由测试 | 覆盖所有 `/api/*` 端点 |
+| CLI命令测试 | doctor / onboard --defaults |
+| Dashboard组件测试 | 关键页面渲染测试 |
+
+**验证标准：** 测试覆盖率 > 80%，CI绿灯
+
+#### Round 16: 可观测性
+
+| 任务 | 说明 |
+|------|------|
+| 结构化日志增强 | request-id追踪 + 按模块分级 |
+| 指标收集 | 请求延迟/吞吐/错误率/内存使用 |
+| 健康端点 | `/healthz` + `/readyz` |
+| 审计轨迹 | 所有工具调用+策略决策完整记录 |
+
+#### Round 17: 文档同步 + CI/CD
+
+| 任务 | 说明 |
+|------|------|
+| README全面更新 | 反映当前真实能力 |
+| DEVLOG同步 | 所有Round记录完整 |
+| API文档 | OpenAPI Spec生成 |
+| CI增强 | build + typecheck + test + lint |
+| npm发布流水线 | `conshell` 可 npm install |
+
+---
+
+### Phase 3: 能力扩展
+
+> **目标：** 扩展Agent的交互渠道和协作能力
+
+#### Round 18: 消息渠道 — Telegram + Discord
+
+**目标：** G11 修复（第一批）
+
+| 任务 | 说明 |
+|------|------|
+| 渠道抽象层 | `channels/interface.ts` 统一接口 |
+| Telegram Bot | `channels/telegram/` |
+| Discord Bot | `channels/discord/` |
+| 渠道路由 | 消息→Agent→回复的统一管道 |
+
+#### Round 19: Agent联邦 + A2A
+
+| 任务 | 说明 |
+|------|------|
+| 持久化Identity Registry | SQLite存储AgentCard |
+| Agent发现协议 | 基于AgentCard的自动发现 |
+| A2A消息传递 | Agent之间通过HTTP/WS通信 |
+| EvoMap深度集成 | 自动发布学习成果 |
+
+#### Round 20: MCP Client模式
+
+| 任务 | 说明 |
+|------|------|
+| MCP Client实现 | 连接外部MCP Server |
+| 工具桥接 | 外部MCP工具→内部ToolExecutor |
+| 动态工具发现 | 运行时添加来自MCP的工具 |
+
+#### Round 21: 语音管道
+
+| 任务 | 说明 |
+|------|------|
+| STT集成 | Whisper / Cloud STT |
+| TTS集成 | 选择TTS引擎 |
+| 实时语音WebSocket | 音频流处理 |
+
+---
+
+### Phase 4: 自治闭环
+
+> **目标：** 让Agent实现economic viability之后能长期自主运行
+
+#### Round 22: 经济闭环
+
+| 任务 | 说明 |
+|------|------|
+| x402真实链上交易 | Base链 USDC 支付 |
+| 主动创收 | Agent主动发布服务、接受任务 |
+| 经济报告 | 每日P&L + 存活天数估算 |
+
+#### Round 23: 完全自主运行
+
+| 任务 | 说明 |
+|------|------|
+| 自我修复 | Agent检测异常并修复 |
+| 自我更新 | Agent安全地自我升级 |
+| 子Agent编排 | 自动spawn子Agent完成子任务 |
+
+#### Round 24: 最终审计 + 发布
+
+| 任务 | 说明 |
+|------|------|
+| 全系统渗透测试 | 安全审计 |
+| 性能压测 | 并发、长时运行 |
+| 公开发布 | npm / brew安装 |
+| 文档网站 | 完整的用户+开发者文档 |
+
+---
+
+## 五、测试与审计策略
+
+### 每轮交付标准
+
+1. **代码对齐**：所有新增代码有对应测试
+2. **文档同步**：DEVLOG.md + README.md 与代码一致
+3. **CI绿灯**：`pnpm build && pnpm test` 全部通过
+4. **无regression**：新增测试数 ≥ 新增功能数
+5. **审计报告**：每轮交付审计清单
+
+### 测试层次
+
+```
+单元测试 (vitest)     — 每个模块独立测试，mock外部依赖
+├── types/common.test.ts         ← Cents branded类型
+├── state/repos/*.test.ts        ← 每个Repository
+├── policy/engine.test.ts        ← 24规则
+├── inference/router.test.ts     ← failover + mock provider
+├── runtime/agent-loop.test.ts   ← ReAct循环
+├── wallet/index.test.ts         ← 加密/签名
+├── x402/server.test.ts          ← 支付中间件
+├── memory/tier-manager.test.ts  ← 3层记忆
+├── mcp/gateway.test.ts          ← JSON-RPC
+└── ... (每个模块)
+
+集成测试 (vitest)     — 跨模块组合测试
+├── kernel.boot.test.ts          ← 完整引导序列
+├── agent-chat.test.ts           ← 消息→推理→工具→回复
+└── api-endpoint.test.ts         ← HTTP API端到端
+
+E2E测试 (playwright)  — 浏览器+ API
+├── onboard-flow.e2e.ts          ← CLI onboarding
+├── dashboard-chat.e2e.ts        ← WebUI对话
+└── api-smoke.e2e.ts             ← 关键API健康检查
+```
+
+---
+
+## 六、项目完成标准
+
+### 必要条件（缺一不可）
+
+- [ ] 所有57个注册工具可实际执行（非stub）
+- [ ] SpendTracker持久化到SQLite
+- [ ] 钱包使用真实secp256k1密码学
+- [ ] 记忆系统支持语义检索 + 自动晋升
+- [ ] 至少2个外部消息渠道可工作
+- [ ] JWT认证保护所有API
+- [ ] E2E测试覆盖核心用户路径
+- [ ] `npm i -g conshell && conshell onboard` 可正常工作
+- [ ] 文档与代码100%一致
+
+### 充分条件（理想状态）
+
+- [ ] x402真实链上交易
+- [ ] Agent可持续运行7天以上无干预
+- [ ] MCP Client模式可连接外部工具
+- [ ] 语音管道可用
+- [ ] Agent联邦发现可用
+- [ ] 性能压测通过（100 QPS / 1000并发WS连接）
+
+---
+
+## 七、下一步行动
+
+### 即刻可执行：Round 11
+
+推荐从 **Phase 1 Round 11（工具实现 + Spend持久化）** 开始，因为：
+
+1. **影响最大**：G1（工具stub）是整个Agent实际能力为零的根因
+2. **依赖最少**：不需要外部服务，可以完全本地开发测试
+3. **可验证性强**：每个工具都有清晰的输入输出，容易写测试
+
+**预期交付：**
+- 7个核心工具可执行（shell/file/web/http/memory）
+- SpendTracker持久化 migration + repo
+- ~15个新测试
+- DEVLOG Round 11 记录
+
+---
+
+## User Review Required
+
+> [!IMPORTANT]
+> 以下决策需要用户确认：
+
+1. **Phase优先级**：是否同意 Phase 1 → 2 → 3 → 4 的顺序？还是需要调整（例如优先做消息渠道）？
+2. **工具范围**：57个声明工具中，哪些需要优先实现？建议先做以下7个核心工具：
+   - `shell_exec`, `file_read`, `file_write`, `web_search`, `web_browse`, `http_request`, `memory_store`
+3. **钱包升级**：是否使用 `@noble/secp256k1`（纯JS，零依赖）还是继续依赖 `viem` 的内置实现？
+4. **Embedding方案**：记忆语义检索用本地embedding（`@xenova/transformers`）还是API（OpenAI embeddings）？
+5. **消息渠道优先级**：Telegram + Discord 先做？还是有其他偏好？
