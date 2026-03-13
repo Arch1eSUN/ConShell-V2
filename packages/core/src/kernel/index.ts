@@ -236,7 +236,7 @@ export class Kernel {
           stateMachine: automaton.stateMachine,
           agentLoop: automaton.agentLoop,
           toolExecutor: automaton.toolExecutor,
-          skills, memory,
+          skills, memory, db,
         });
       });
 

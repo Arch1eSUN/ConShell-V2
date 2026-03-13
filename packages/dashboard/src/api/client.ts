@@ -39,6 +39,46 @@ export interface ConfigResponse {
   dailyBudgetCents: number;
 }
 
+// ── Session Types ──────────────────────────────────────────
+
+export interface SessionItem {
+  id: string;
+  title: string | null;
+  channel: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface SessionListResponse {
+  sessions: SessionItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface TurnItem {
+  id: number;
+  session_id: string;
+  role: 'user' | 'assistant';
+  content: string | null;
+  thinking: string | null;
+  tool_calls_json: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cost_cents: number;
+  model: string | null;
+  created_at: string;
+}
+
+export interface TranscriptResponse {
+  session: SessionItem;
+  turns: TurnItem[];
+  count: number;
+}
+
+// ── API Client ─────────────────────────────────────────────
+
 class ApiClient {
   private baseUrl: string;
 
@@ -66,36 +106,42 @@ class ApiClient {
     });
   }
 
-  async *chatStream(message: string): AsyncGenerator<string> {
-    const resp = await fetch(`${this.baseUrl}/api/chat/stream`, {
+  async *chatStream(message: string, sessionId?: string): AsyncGenerator<string> {
+    const resp = await fetch(`${this.baseUrl}/api/webchat/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, sessionId: sessionId ?? crypto.randomUUID() }),
     });
     if (!resp.ok) throw new Error(`Stream Error: ${resp.status}`);
-    const reader = resp.body?.getReader();
-    if (!reader) throw new Error('No response body');
-    const decoder = new TextDecoder();
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const text = decoder.decode(value, { stream: true });
-      // Parse SSE events
-      for (const line of text.split('\n')) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') return;
-          try {
-            const parsed = JSON.parse(data) as { content?: string };
-            if (parsed.content) yield parsed.content;
-          } catch {
-            yield data;
-          }
-        }
-      }
-    }
+    // For non-streaming HTTP path, parse JSON response
+    const data = await resp.json() as { reply?: string; response?: string };
+    const content = data.reply ?? data.response ?? '';
+    if (content) yield content;
   }
+
+  // ── Session API ──────────────────────────────────────────
+
+  async listSessions(limit: number = 50, offset: number = 0): Promise<SessionListResponse> {
+    return this.request(`/api/sessions?limit=${limit}&offset=${offset}`);
+  }
+
+  async getTranscript(sessionId: string): Promise<TranscriptResponse> {
+    return this.request(`/api/sessions/${sessionId}/transcript`);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.request(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+  }
+
+  async updateSessionTitle(sessionId: string, title: string): Promise<void> {
+    await this.request(`/api/sessions/${sessionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    });
+  }
+
+  // ── Config & Metrics ─────────────────────────────────────
 
   async getConfig(): Promise<ConfigResponse> {
     return this.request('/api/config');

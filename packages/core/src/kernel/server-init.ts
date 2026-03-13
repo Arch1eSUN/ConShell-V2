@@ -28,6 +28,8 @@ export interface ServerInitDeps {
   memory: MemoryTierManager;
   /** Optional: WebChat transport for /api/webchat/message */
   webChatTransport?: WebChatTransport;
+  /** Database instance for persistent state */
+  db?: any;
 }
 
 export interface ServerInstances {
@@ -60,6 +62,7 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   const { registerMemoryRoutes } = await import('../server/routes/memory.js');
   const { registerWebChatRoutes } = await import('../server/routes/webchat.js');
   const { registerProxyRoutes } = await import('../server/proxy.js');
+  const { registerSessionRoutes } = await import('../server/routes/sessions.js');
 
   // Create servers
   const port = cfgGet<number>(config, 'port', 4200);
@@ -85,6 +88,18 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   registerMemoryRoutes(httpServer, memory, logger);
   registerWebChatRoutes(httpServer, deps.webChatTransport ?? null, logger);
   registerProxyRoutes(httpServer, inference, logger);
+
+  // ── ConversationService + Session Routes ──────────────────────────
+  if (deps.db) {
+    const { SessionsRepository } = await import('../state/repos/sessions.js');
+    const { TurnsRepository } = await import('../state/repos/turns.js');
+    const { ConversationService } = await import('../channels/webchat/conversation-service.js');
+    const sessionsRepo = new SessionsRepository(deps.db);
+    const turnsRepo = new TurnsRepository(deps.db);
+    const conversationService = new ConversationService(sessionsRepo, turnsRepo);
+    registerSessionRoutes(httpServer, conversationService, logger);
+    logger.info('Session routes registered');
+  }
 
   // ── Start ─────────────────────────────────────────────────────────
   await httpServer.start();

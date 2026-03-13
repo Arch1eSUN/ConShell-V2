@@ -41,3 +41,6 @@ export type { SkillRow, InsertSkill } from './skills.js';
 
 export { ProviderConfigRepository } from './provider.js';
 export type { ProviderConfigRow, UpsertProviderConfig } from './provider.js';
+
+export { SessionsRepository } from './sessions.js';
+export type { SessionRow, SessionWithCount } from './sessions.js';

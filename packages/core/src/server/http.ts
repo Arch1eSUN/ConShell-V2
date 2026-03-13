@@ -98,6 +98,8 @@ export class HttpServer {
   put(path: string, handler: RouteHandler): void { this.route('PUT', path, handler); }
   /** DELETE 快捷 */
   delete(path: string, handler: RouteHandler): void { this.route('DELETE', path, handler); }
+  /** PATCH 快捷 */
+  patch(path: string, handler: RouteHandler): void { this.route('PATCH', path, handler); }
 
   /** 注册中间件 */
   use(middleware: Middleware): void {
@@ -148,7 +150,7 @@ export class HttpServer {
 
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', this.opts.corsOrigin);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Payment-TxHash, X-Payment-Chain, X-Payment-From, X-Payment-Amount');
 
     // Preflight

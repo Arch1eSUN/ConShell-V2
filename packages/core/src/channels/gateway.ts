@@ -14,6 +14,7 @@ import type {
   ChannelPlatform, ChannelConfig, ChannelMessage, OutboundMessage,
   ChannelAdapter, ChannelState, StreamErrorCode,
 } from './index.js';
+import type { ConversationService } from './webchat/conversation-service.js';
 import { ChannelManager } from './index.js';
 import { TelegramAdapter } from './adapters/telegram.js';
 import { DiscordAdapter } from './adapters/discord.js';
@@ -39,6 +40,8 @@ export interface GatewayConfig {
   defaultModel?: string;
   /** Default system prompt for inference streaming */
   defaultSystemPrompt?: string;
+  /** Optional conversation service for persistent session state */
+  conversationService?: ConversationService;
 }
 
 export interface GatewayStats {
@@ -69,6 +72,7 @@ export class Gateway {
   private startTime = 0;
   private stats = { inbound: 0, outbound: 0, errors: 0 };
   private inferenceRouter: InferenceRouter | null;
+  private conversationService: ConversationService | null;
 
   // Rate limiting
   private messageTimestamps: number[] = [];
@@ -82,6 +86,7 @@ export class Gateway {
     };
     this.manager = new ChannelManager({ logger: this.logger });
     this.inferenceRouter = config.inferenceRouter ?? null;
+    this.conversationService = config.conversationService ?? null;
   }
 
   // ── Lifecycle ──────────────────────────────────────────
@@ -340,12 +345,32 @@ export class Gateway {
     target: string,
   ): Promise<{ chunksEmitted: number; fullText: string }> {
     const router = this.inferenceRouter!;
-    const messages: Message[] = [];
+    const conv = this.conversationService;
+    const sessionId = msg.groupId ?? msg.from;
 
-    if (this.config.defaultSystemPrompt) {
-      messages.push({ role: 'system', content: this.config.defaultSystemPrompt });
+    // ── Persist user turn ──
+    if (conv) {
+      conv.appendTurn({
+        sessionId,
+        role: 'user',
+        content: msg.content,
+        channel: msg.platform,
+      });
     }
-    messages.push({ role: 'user', content: msg.content });
+
+    // ── Build messages from session history or single-turn ──
+    let messages: Message[];
+    if (conv) {
+      messages = conv.buildContext(sessionId, {
+        systemPrompt: this.config.defaultSystemPrompt,
+      });
+    } else {
+      messages = [];
+      if (this.config.defaultSystemPrompt) {
+        messages.push({ role: 'system', content: this.config.defaultSystemPrompt });
+      }
+      messages.push({ role: 'user', content: msg.content });
+    }
 
     const model = this.config.defaultModel ?? 'gpt-4';
     let fullText = '';
@@ -396,6 +421,17 @@ export class Gateway {
         final: true,
       });
       chunksEmitted++;
+    }
+
+    // ── Persist assistant turn ──
+    if (conv && fullText) {
+      conv.appendTurn({
+        sessionId,
+        role: 'assistant',
+        content: fullText,
+        channel: msg.platform,
+        model,
+      });
     }
 
     return { chunksEmitted, fullText };

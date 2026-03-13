@@ -402,6 +402,25 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+
+  // v5: Sessions table for persistent conversation state
+  {
+    version: 5,
+    description: 'Sessions table: conversation metadata for persistent state',
+    apply(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sessions (
+          id         TEXT PRIMARY KEY,
+          title      TEXT,
+          channel    TEXT NOT NULL DEFAULT 'webchat',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel);
+      `);
+    },
+  },
 ];
 
 // ── Public API ─────────────────────────────────────────────────────────
