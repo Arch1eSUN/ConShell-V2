@@ -36,6 +36,7 @@ packages/
 | **selfmod** | Self-modification with audit trail |
 | **spend** | Budget tracking + SQLite-persisted cost management |
 | **evomap** | Evolutionary capability mapping |
+| **doctor** | Runtime integrity diagnostics and self-health checks |
 | **compute** | Distributed compute provider management |
 
 ## Quick Start
@@ -51,8 +52,8 @@ pnpm install
 # Build all packages
 pnpm build
 
-# Run tests
-pnpm test
+# Run tests (recommended — from packages/core)
+cd packages/core && npx vitest run --no-coverage
 
 # Run benchmarks (separate, non-blocking)
 pnpm --filter @conshell/core test:bench
@@ -234,7 +235,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm workspace
 - **Build:** tsc
-- **Test:** Vitest (507 functional tests + benchmarks)
+- **Test:** Vitest (520 functional tests + benchmarks)
 - **CI:** GitHub Actions
 - **Frontend:** React + Vite
 - **Database:** SQLite (better-sqlite3, WAL mode)
@@ -247,7 +248,7 @@ See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
 | Core build | ✅ Passing |
 | CLI build | ✅ Passing |
 | Dashboard build | ✅ Passing (tsc + vite) |
-| Functional tests | ✅ 507 passing (34 files) |
+| Functional tests | ✅ 520 passing (35 files) |
 | Benchmarks | ✅ Separate `test:bench` |
 | CI | ✅ GitHub Actions |
 | WebChat | ✅ HTTP + WebSocket + token streaming |

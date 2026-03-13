@@ -1,6 +1,6 @@
 # 🐢 ConShell V2 — 开发日志 (DEVLOG)
 
-> **最后更新**: 2026-03-14 (Round 13)
+> **最后更新**: 2026-03-14 (Round 14)
 > **用途**: 提供给 LLM (GPT/Claude) 快速理解项目全貌，生成下一步开发计划。
 
 ---
@@ -15,7 +15,7 @@
 
 - **语言**: TypeScript（strict mode）
 - **包管理**: pnpm monorepo
-- **测试**: vitest（34 个测试文件（含 benchmark），507 个测试用例）
+- **测试**: vitest（35 个测试文件（含 benchmark + doctor），520 个测试用例）
 - **构建**: tsc
 - **CI**: GitHub Actions
 
@@ -682,4 +682,66 @@ ce7d0fa feat(tools): Round 11 — memory tools + spend persistence
 |------|------|------|
 | node_modules EPERM | 环境 | 阻塞 `pnpm build` / `pnpm install`, 需 `sudo` 修复 |
 | better-sqlite3 ABI | 环境 | node_modules 不可访问时 native module 无法加载；测试通过因 vitest mock |
+
+---
+
+## Round 14 — Runtime Integrity Doctor + Engineering Truth Infrastructure (2026-03-14)
+
+**目标**: 建立运行时自检能力。使 ConShell 能够可靠地判断自身是否健康、是否退化、以及原因。
+
+### 核心发现
+
+| 发现 | 置信度 | 证据 |
+|------|--------|------|
+| 从仓库根目录运行 vitest 发现 355 文件 / 2971 测试（包含被污染的 node_modules 副本） | 高 | `npx vitest run` root 输出: `113 failed \| 242 passed (355)` |
+| 从 `packages/core` 运行 vitest 发现 35 文件 / 520 测试（干净）| 高 | `npx vitest run` core 输出: `35 passed (35), 520 passed (520)` |
+| 存在编号 `node_modules` 副本目录: `node_modules 2`, `node_modules 3`, `node_modules 4` | 高 | `find` 输出 |
+| `better-sqlite3` 在 `state/database.ts` 有值导入，`spend.test.ts` 直接实例化 | 高 | 代码审查 |
+| EvoMap 只有 2 个端点（`/a2a/hello`, `/a2a/publish`），无 worker claim | 高 | `evomap/client.ts` 代码审查 |
+| 无 `.nvmrc` 文件，存在 Node 版本漂移风险 | 高 | `cat .nvmrc` → not found |
+
+### 代码变更
+
+| 文件 | 类型 | 用途 |
+|------|------|------|
+| `vitest.config.ts` (根目录) | NEW | 防止从根目录运行 vitest 导致污染测试结果 |
+| `packages/core/src/doctor/index.ts` | NEW | 完整性诊断主模块 — `runDiagnostics()` + `formatReport()` |
+| `packages/core/src/doctor/checks/env.ts` | NEW | 环境检查: Node 版本, .nvmrc, 工作区根目录 |
+| `packages/core/src/doctor/checks/deps.ts` | NEW | 依赖检查: node_modules 可访问性, 编号副本, native 模块 |
+| `packages/core/src/doctor/checks/tests.ts` | NEW | 测试边界: vitest 配置, 文件清点, 基准隔离, 根防护 |
+| `packages/core/src/doctor/checks/build.ts` | NEW | 构建就绪: tsconfig, dist 目录, 构建脚本 |
+| `packages/core/src/doctor/checks/integrations.ts` | NEW | 集成健康: EvoMap 端点探测 + 合约状态 |
+| `packages/core/src/doctor/doctor.test.ts` | NEW | 13 个测试覆盖所有检查类别 |
+| `docs/FAILURE-PATTERNS.md` | NEW | 10 个已知失败模式的症状/触发/恢复/预防 |
+
+### 标准命令面板
+
+| 用途 | 命令 | 可信度 |
+|------|------|--------|
+| 类型检查 | `cd packages/core && npx tsc --noEmit` | ✅ 高 |
+| 功能测试 | `cd packages/core && npx vitest run --no-coverage` | ✅ 高 |
+| Doctor 自检 | `cd packages/core && npx vitest run src/doctor/doctor.test.ts` | ✅ 高 |
+| **禁止使用** | `npx vitest run` (仓库根目录) | ❌ 已污染 |
+
+### 测试矩阵更新
+
+| 测试文件 | 用例数 | 状态 |
+|----------|--------|------|
+| `doctor.test.ts` [NEW] | 13 | ✅ |
+| **总计** | **520 / 520** | **✅ 全通过 (35 文件)** |
+
+### 扩展就绪评估
+
+**判定: 有条件可以进行功能扩展。**
+
+**可继续的条件:**
+- ✅ 类型系统完整 (tsc 0 errors)
+- ✅ 测试覆盖真实可信（从 `packages/core` 运行 = 35 文件 / 520 测试）
+- ✅ Doctor 诊断子系统可用
+- ✅ 根 vitest 防护已到位
+
+**剩余风险（不阻塞功能开发）:**
+- ⚠️ node_modules EPERM 需要 `sudo` 修复才能 `pnpm build`
+- ⚠️ 编号 node_modules 副本应该被清理
+- ⚠️ 无 `.nvmrc` — Node 版本漂移风险
 
