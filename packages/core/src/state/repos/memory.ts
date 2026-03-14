@@ -14,7 +14,8 @@ export interface WorkingMemoryRow {
 }
 export interface EpisodicMemoryRow {
   id: number; event_type: string; content: string; importance: number;
-  classification: string | null; session_id: string | null; turn_id: number | null; created_at: string;
+  classification: string | null; session_id: string | null; turn_id: number | null;
+  owner_id: string | null; created_at: string;
 }
 export interface SemanticMemoryRow {
   id: number; category: string; key: string; value: string;
@@ -30,10 +31,11 @@ export interface RelationshipMemoryRow {
   created_at: string; updated_at: string;
 }
 export interface SessionSummaryRow {
-  id: number; session_id: string; summary: string; outcome: string | null; created_at: string;
+  id: number; session_id: string; summary: string; outcome: string | null; owner_id: string | null; created_at: string;
 }
 export interface SoulHistoryRow {
-  id: number; content: string; content_hash: string; alignment_score: number | null; created_at: string;
+  id: number; content: string; content_hash: string; alignment_score: number | null;
+  owner_id: string | null; created_at: string;
 }
 
 // ── Insert types ───────────────────────────────────────────────────────
@@ -42,6 +44,7 @@ export interface InsertWorkingMemory { sessionId: string; type: string; content:
 export interface InsertEpisodicMemory {
   eventType: string; content: string; importance?: number;
   classification?: string; sessionId?: string; turnId?: number;
+  ownerId?: string;
 }
 export interface UpsertSemanticMemory {
   category: string; key: string; value: string; confidence?: number; source?: string;
@@ -52,6 +55,7 @@ export interface UpsertRelationship {
 }
 export interface InsertSoulHistory {
   content: string; contentHash: string; alignmentScore?: number;
+  ownerId?: string;
 }
 
 // ── Working Memory Repository ──────────────────────────────────────────
@@ -86,8 +90,8 @@ export class EpisodicMemoryRepository {
   insert(mem: InsertEpisodicMemory): number {
     const content = this.sanitize ? this.sanitize(mem.content) : mem.content;
     const result = this.db.prepare(
-      'INSERT INTO episodic_memory (event_type, content, importance, classification, session_id, turn_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run(mem.eventType, content, mem.importance ?? 5, mem.classification ?? null, mem.sessionId ?? null, mem.turnId ?? null, nowISO());
+      'INSERT INTO episodic_memory (event_type, content, importance, classification, session_id, turn_id, owner_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(mem.eventType, content, mem.importance ?? 5, mem.classification ?? null, mem.sessionId ?? null, mem.turnId ?? null, mem.ownerId ?? null, nowISO());
     return Number(result.lastInsertRowid);
   }
 
@@ -101,6 +105,87 @@ export class EpisodicMemoryRepository {
     return this.db.prepare(
       'SELECT * FROM episodic_memory WHERE session_id = ? ORDER BY created_at',
     ).all(sessionId) as EpisodicMemoryRow[];
+  }
+
+  /** Find by owner identity. */
+  findByOwner(ownerId: string): EpisodicMemoryRow[] {
+    return this.db.prepare(
+      'SELECT * FROM episodic_memory WHERE owner_id = ? ORDER BY created_at',
+    ).all(ownerId) as EpisodicMemoryRow[];
+  }
+
+  /** Find top episodes by importance, scoped to an owner identity. */
+  findTopByImportanceForOwner(ownerId: string, limit: number): EpisodicMemoryRow[] {
+    return this.db.prepare(
+      'SELECT * FROM episodic_memory WHERE owner_id = ? ORDER BY importance DESC, created_at DESC LIMIT ?',
+    ).all(ownerId, limit) as EpisodicMemoryRow[];
+  }
+
+  /**
+   * Find top episodes by blended relevance score (Round 15.1.1 — hardened).
+   * Score = importance×2 + recency_bonus + continuity_bonus.
+   * Continuity bonus: consolidated/preference/lesson types get +2/+3.
+   */
+  findTopByRelevance(limit: number): EpisodicMemoryRow[] {
+    return this.db.prepare(`
+      SELECT *, (importance * 2 + CASE
+        WHEN created_at > datetime('now', '-1 hour') THEN 5
+        WHEN created_at > datetime('now', '-1 day') THEN 3
+        WHEN created_at > datetime('now', '-7 days') THEN 1
+        ELSE 0
+      END + CASE
+        WHEN event_type LIKE 'preference%' OR event_type LIKE 'lesson%' THEN 3
+        WHEN event_type LIKE 'consolidated_%' THEN 2
+        ELSE 0
+      END) as relevance_score
+      FROM episodic_memory
+      ORDER BY relevance_score DESC, created_at DESC LIMIT ?
+    `).all(limit) as EpisodicMemoryRow[];
+  }
+
+  /**
+   * Find top episodes by blended relevance score, scoped to owner (Round 15.1.1).
+   * Same scoring as findTopByRelevance but filtered to a specific owner.
+   */
+  findTopByRelevanceForOwner(ownerId: string, limit: number): EpisodicMemoryRow[] {
+    return this.db.prepare(`
+      SELECT *, (importance * 2 + CASE
+        WHEN created_at > datetime('now', '-1 hour') THEN 5
+        WHEN created_at > datetime('now', '-1 day') THEN 3
+        WHEN created_at > datetime('now', '-7 days') THEN 1
+        ELSE 0
+      END + CASE
+        WHEN event_type LIKE 'preference%' OR event_type LIKE 'lesson%' THEN 3
+        WHEN event_type LIKE 'consolidated_%' THEN 2
+        ELSE 0
+      END) as relevance_score
+      FROM episodic_memory
+      WHERE owner_id = ?
+      ORDER BY relevance_score DESC, created_at DESC LIMIT ?
+    `).all(ownerId, limit) as EpisodicMemoryRow[];
+  }
+
+  /**
+   * Check if an episode with the same session + event_type + content prefix exists (Round 15.1).
+   * Used by ConsolidationPipeline as a dedup guard to prevent duplicate episodes.
+   */
+  existsBySessionAndContent(sessionId: string, eventType: string, contentPrefix: string): boolean {
+    const row = this.db.prepare(
+      'SELECT 1 FROM episodic_memory WHERE session_id = ? AND event_type = ? AND content LIKE ? LIMIT 1',
+    ).get(sessionId, eventType, contentPrefix.slice(0, 200) + '%') as { 1: number } | undefined;
+    return row !== undefined;
+  }
+
+  /** Total episode count. */
+  count(): number {
+    const row = this.db.prepare('SELECT COUNT(*) as cnt FROM episodic_memory').get() as { cnt: number };
+    return row.cnt;
+  }
+
+  /** Episode count scoped to a specific owner (Goal D — Round 15.0.2). */
+  countByOwner(ownerId: string): number {
+    const row = this.db.prepare('SELECT COUNT(*) as cnt FROM episodic_memory WHERE owner_id = ?').get(ownerId) as { cnt: number };
+    return row.cnt;
   }
 
   delete(id: number): boolean {
@@ -220,8 +305,8 @@ export class SoulHistoryRepository {
 
   insert(entry: InsertSoulHistory): number {
     const result = this.db.prepare(
-      'INSERT INTO soul_history (content, content_hash, alignment_score, created_at) VALUES (?, ?, ?, ?)',
-    ).run(entry.content, entry.contentHash, entry.alignmentScore ?? null, nowISO());
+      'INSERT INTO soul_history (content, content_hash, alignment_score, owner_id, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(entry.content, entry.contentHash, entry.alignmentScore ?? null, entry.ownerId ?? null, nowISO());
     return Number(result.lastInsertRowid);
   }
 
@@ -237,6 +322,13 @@ export class SoulHistoryRepository {
     const row = this.db.prepare('SELECT COUNT(*) as cnt FROM soul_history').get() as { cnt: number };
     return row.cnt;
   }
+
+  /** Find soul history entries by owner identity. */
+  findByOwner(ownerId: string): SoulHistoryRow[] {
+    return this.db.prepare(
+      'SELECT * FROM soul_history WHERE owner_id = ? ORDER BY created_at',
+    ).all(ownerId) as SoulHistoryRow[];
+  }
 }
 
 // ── Session Summaries Repository ───────────────────────────────────────
@@ -244,11 +336,11 @@ export class SoulHistoryRepository {
 export class SessionSummariesRepository {
   constructor(private readonly db: Database.Database) {}
 
-  upsert(sessionId: string, summary: string, outcome?: string): number {
+  upsert(sessionId: string, summary: string, outcome?: string, ownerId?: string): number {
     const result = this.db.prepare(`
-      INSERT INTO session_summaries (session_id, summary, outcome, created_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, outcome = excluded.outcome
-    `).run(sessionId, summary, outcome ?? null, nowISO());
+      INSERT INTO session_summaries (session_id, summary, outcome, owner_id, created_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, outcome = excluded.outcome, owner_id = COALESCE(excluded.owner_id, owner_id)
+    `).run(sessionId, summary, outcome ?? null, ownerId ?? null, nowISO());
     return Number(result.lastInsertRowid);
   }
 
@@ -258,5 +350,12 @@ export class SessionSummariesRepository {
 
   findRecent(limit: number): SessionSummaryRow[] {
     return this.db.prepare('SELECT * FROM session_summaries ORDER BY created_at DESC LIMIT ?').all(limit) as SessionSummaryRow[];
+  }
+
+  /** Find recent session summaries scoped to an owner identity. */
+  findRecentByOwner(ownerId: string, limit: number): SessionSummaryRow[] {
+    return this.db.prepare(
+      'SELECT * FROM session_summaries WHERE owner_id = ? ORDER BY created_at DESC LIMIT ?',
+    ).all(ownerId, limit) as SessionSummaryRow[];
   }
 }

@@ -40,7 +40,7 @@ export interface CheckResult {
   /** Human-readable label */
   label: string;
   /** Category this check belongs to */
-  category: 'env' | 'deps' | 'tests' | 'build' | 'integrations';
+  category: 'env' | 'deps' | 'tests' | 'build' | 'integrations' | 'identity';
   /** Result severity */
   severity: Severity;
   /** Current status */
@@ -88,6 +88,44 @@ export function computeRuntimeIdentity(): RuntimeIdentity {
   };
 }
 
+// ── Verification Context (Round 14.6) ─────────────────────────────────
+
+/** Runtime alignment status */
+export type RuntimeAlignmentStatus = 'aligned' | 'mismatched' | 'unknown';
+
+/**
+ * Verification Context — answers "which runtime produced this report?"
+ *
+ * Every IntegrityReport carries this so auditors never have to guess
+ * whether a "green" report was produced on the pinned runtime or not.
+ */
+export interface VerificationContext {
+  /** The runtime that produced this report */
+  currentRuntime: RuntimeIdentity;
+  /** The pinned runtime from .nvmrc / .node-version, if any */
+  pinnedRuntime: { version: string; source: string } | null;
+  /** Whether current runtime matches pinned runtime */
+  alignmentStatus: RuntimeAlignmentStatus;
+  /** Whether execution evidence runtime matches current runtime */
+  evidenceRuntimeAligned: boolean;
+  /** Human-readable one-liner for quick audit */
+  summary: string;
+}
+
+// ── Verification Mode (Round 14.7) ────────────────────────────────────
+
+/**
+ * Verification Mode — machine-readable truth scope of an IntegrityReport.
+ *
+ * Tells auditors whether this report's conclusions are deterministic
+ * (fully aligned runtime + evidence) or degraded (and why).
+ */
+export type VerificationMode =
+  | 'deterministic'       // current shell = pinned runtime, evidence aligned
+  | 'degraded-no-pin'     // no .nvmrc → can't verify alignment
+  | 'degraded-misaligned' // current shell ≠ pinned runtime
+  | 'degraded-no-evidence'; // no execution evidence provided
+
 // ── Execution Evidence (Route B) ──────────────────────────────────────
 
 /** Result from running a trusted command externally */
@@ -133,6 +171,21 @@ export interface DiagnosticsOptions {
    * because the Doctor has no proof that tests actually pass.
    */
   executionEvidence?: ExecutionEvidence;
+  /**
+   * Optional: the agent database for identity coherence checks.
+   * When absent, identity checks are skipped.
+   */
+  db?: import('better-sqlite3').Database;
+  /**
+   * Optional: current SOUL.md content for soul-anchor alignment.
+   */
+  soulContent?: string;
+  /**
+   * Optional: runtime SelfState for self-model verification.
+   * When provided, Doctor verifies runtime beliefs against DB evidence.
+   * When absent, falls back to DB-only cold check.
+   */
+  selfState?: import('../identity/continuity-service.js').SelfState;
 }
 
 export interface GateCriterion {
@@ -157,6 +210,10 @@ export interface IntegrityReport {
   commands: CommandPanel;
   /** Expansion readiness gate */
   readiness: ReadinessGate;
+  /** Runtime identity of this report (Round 14.6) */
+  verificationContext: VerificationContext;
+  /** Truth scope of this report (Round 14.7) */
+  verificationMode: VerificationMode;
 }
 
 export interface CommandPanel {
@@ -172,11 +229,14 @@ export interface CommandPanel {
 
 // ── Checks ─────────────────────────────────────────────────────────────
 
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { checkEnvironment } from './checks/env.js';
 import { checkDependencies } from './checks/deps.js';
 import { checkTestBoundary, checkExecutionEvidence, type EvidenceAlignmentResult } from './checks/tests.js';
 import { checkBuildReadiness } from './checks/build.js';
 import { checkIntegrations } from './checks/integrations.js';
+import { checkIdentityCoherence } from './checks/identity.js';
 
 // ── Main ───────────────────────────────────────────────────────────────
 
@@ -208,6 +268,11 @@ export async function runDiagnostics(
   const execResults = checkExecutionEvidence(options?.executionEvidence, currentRuntime);
   checks.push(...execResults.checks);
 
+  // Identity coherence checks (when DB is available)
+  if (options?.db) {
+    checks.push(...checkIdentityCoherence(options.db, options.soulContent, options.selfState));
+  }
+
   // Compute counts
   const counts = {
     info: checks.filter(c => c.severity === 'info').length,
@@ -233,6 +298,19 @@ export async function runDiagnostics(
   // Build readiness gate (includes execution evidence criteria)
   const readiness = computeReadinessGate(checks, counts, execResults);
 
+  // Build verification context (Round 14.6)
+  const verificationContext = buildVerificationContext(
+    currentRuntime,
+    projectRoot,
+    execResults.runtimeAligned,
+  );
+
+  // Compute verification mode (Round 14.7)
+  const verificationMode = computeVerificationMode(
+    verificationContext,
+    !!options?.executionEvidence,
+  );
+
   return {
     timestamp: new Date().toISOString(),
     health,
@@ -240,7 +318,74 @@ export async function runDiagnostics(
     counts,
     commands,
     readiness,
+    verificationContext,
+    verificationMode,
   };
+}
+
+/**
+ * Build VerificationContext from current runtime, .nvmrc, and evidence alignment.
+ */
+function buildVerificationContext(
+  currentRuntime: RuntimeIdentity,
+  projectRoot: string,
+  evidenceAligned: boolean,
+): VerificationContext {
+  // Read pinned runtime from .nvmrc or .node-version
+  let pinnedRuntime: VerificationContext['pinnedRuntime'] = null;
+  for (const file of ['.nvmrc', '.node-version']) {
+    const filePath = join(projectRoot, file);
+    if (existsSync(filePath)) {
+      try {
+        const raw = readFileSync(filePath, 'utf-8').trim();
+        const version = raw.startsWith('v') ? raw : `v${raw}`;
+        pinnedRuntime = { version, source: file };
+      } catch { /* unreadable */ }
+      break;
+    }
+  }
+
+  // Determine alignment
+  let alignmentStatus: RuntimeAlignmentStatus;
+  if (!pinnedRuntime) {
+    alignmentStatus = 'unknown';
+  } else if (pinnedRuntime.version === currentRuntime.nodeVersion) {
+    alignmentStatus = 'aligned';
+  } else {
+    alignmentStatus = 'mismatched';
+  }
+
+  // Build summary
+  const rtLabel = `${currentRuntime.nodeVersion} (ABI ${currentRuntime.nodeAbi}, ${currentRuntime.platform}/${currentRuntime.arch})`;
+  const pinLabel = pinnedRuntime
+    ? `${pinnedRuntime.version} (from ${pinnedRuntime.source})`
+    : 'none';
+  const alignIcon = alignmentStatus === 'aligned' ? '✅' : alignmentStatus === 'mismatched' ? '❌' : '❓';
+  const evidenceIcon = evidenceAligned ? '✅' : '❌';
+  const summary = `Runtime: ${rtLabel} | Pinned: ${pinLabel} | Alignment: ${alignIcon} ${alignmentStatus} | Evidence: ${evidenceIcon} ${evidenceAligned ? 'matches' : 'mismatch/missing'}`;
+
+  return {
+    currentRuntime,
+    pinnedRuntime,
+    alignmentStatus,
+    evidenceRuntimeAligned: evidenceAligned,
+    summary,
+  };
+}
+
+/**
+ * Compute the VerificationMode from VerificationContext fields.
+ *
+ * Priority: misaligned > no-pin > no-evidence > deterministic
+ */
+function computeVerificationMode(
+  ctx: VerificationContext,
+  hasEvidence: boolean,
+): VerificationMode {
+  if (ctx.alignmentStatus === 'mismatched') return 'degraded-misaligned';
+  if (ctx.alignmentStatus === 'unknown') return 'degraded-no-pin';
+  if (!hasEvidence || !ctx.evidenceRuntimeAligned) return 'degraded-no-evidence';
+  return 'deterministic';
 }
 
 /**
@@ -340,6 +485,23 @@ function computeReadinessGate(
       : execResults.runtimeMismatchDetail || 'Evidence runtime mismatch or not provided',
   });
 
+  // Criterion 10: Identity-memory coherence
+  const anchorCheck = checks.find(c => c.id === 'identity-anchor-exists');
+  const chainCheck = checks.find(c => c.id === 'continuity-chain-valid');
+  const identityBootstrapped = anchorCheck?.status === 'pass' && chainCheck?.status === 'pass';
+  const identityBroken = chainCheck?.status === 'fail'; // chain break is a blocker
+  criteria.push({
+    name: 'Identity-memory coherence',
+    pass: !identityBroken, // pass if not broken (warn = not bootstrapped yet is OK)
+    note: identityBroken
+      ? chainCheck?.summary ?? 'Continuity chain broken'
+      : identityBootstrapped
+        ? 'Identity anchor and continuity chain valid'
+        : anchorCheck
+          ? 'Identity not yet bootstrapped — non-blocking'
+          : 'Identity checks not run (no DB provided)',
+  });
+
   // Determine verdict
   const executionEvidenceMissing = !hasVitestEvidence || !hasTscEvidence;
   const allPass = criteria.every(c => c.pass);
@@ -393,8 +555,23 @@ export function formatReport(report: IntegrityReport): string {
   lines.push(`Checks: ${report.checks.length} (${report.counts.blocker} blockers, ${report.counts.warning} warnings, ${report.counts.info} info)`);
   lines.push('');
 
+  // Verification Mode & Context (Round 14.6/14.7) — MUST appear before checks
+  const modeIcon = report.verificationMode === 'deterministic' ? '✅' : '⚠️';
+  lines.push(`${modeIcon} Verification Mode: ${report.verificationMode.toUpperCase()}`);
+  lines.push('');
+
+  const vc = report.verificationContext;
+  const alignIcon = vc.alignmentStatus === 'aligned' ? '✅' : vc.alignmentStatus === 'mismatched' ? '❌' : '❓';
+  const evidenceIcon = vc.evidenceRuntimeAligned ? '✅' : '❌';
+  lines.push('── VERIFICATION CONTEXT ─────────────────────────');
+  lines.push(`  Runtime:   ${vc.currentRuntime.nodeVersion} (ABI ${vc.currentRuntime.nodeAbi}, ${vc.currentRuntime.platform}/${vc.currentRuntime.arch})`);
+  lines.push(`  Pinned:    ${vc.pinnedRuntime ? `${vc.pinnedRuntime.version} (from ${vc.pinnedRuntime.source})` : 'none'}`);
+  lines.push(`  Alignment: ${alignIcon} ${vc.alignmentStatus.toUpperCase()}`);
+  lines.push(`  Evidence:  ${evidenceIcon} ${vc.evidenceRuntimeAligned ? 'Matches current runtime' : 'Mismatch or missing'}`);
+  lines.push('');
+
   // Group by category
-  const categories = ['env', 'deps', 'tests', 'build', 'integrations'] as const;
+  const categories = ['env', 'deps', 'tests', 'build', 'integrations', 'identity'] as const;
   for (const cat of categories) {
     const catChecks = report.checks.filter(c => c.category === cat);
     if (catChecks.length === 0) continue;

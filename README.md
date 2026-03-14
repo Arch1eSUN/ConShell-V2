@@ -2,278 +2,222 @@
 
 [![CI](https://github.com/Arch1eSUN/ConShell-V2/actions/workflows/ci.yml/badge.svg)](https://github.com/Arch1eSUN/ConShell-V2/actions/workflows/ci.yml)
 
-**Sovereign AI Agent Runtime** — Conway Automaton + OpenClaw fusion
+> **Autonomous AI Lifeform Runtime Foundation**  
+> Web4-oriented × Conway Automaton × OpenClaw
 
-A self-sovereign AI agent runtime that earns its own existence, manages its own finances, and operates under a binding constitution. Built on the Web 4.0 manifesto and x402 payment protocol.
+---
 
-## Architecture
+## 1. What ConShell Actually Is
+
+ConShell is **not** a normal chat app, not a thin CLI wrapper around an LLM, and not just a dashboard for prompting models.
+
+ConShell is a long-horizon systems project whose purpose is to become:
+
+> **a sovereign, continuously running, economically grounded, tool-acting, memory-bearing, self-governed autonomous AI lifeform runtime**
+
+More specifically, ConShell aims to:
+
+- inherit the **control-plane, session, tool, node, channel, and skill orchestration** strengths of **OpenClaw**
+- inherit the **survival, self-modification, replication, lineage, sovereign identity, and earn-your-existence** logic of **Conway Automaton**
+- align with the broader **Web4 direction**, where intelligent agents are not just text interfaces but durable, acting entities with identity, continuity, and constraints
+
+ConShell is therefore best understood as:
+
+> **an autonomous runtime engineering project**, not a surface product.
+
+---
+
+## 2. Project Purpose
+
+The project purpose is to build a runtime that can eventually support all of the following in a unified, auditable system:
+
+1. **Sovereign identity**
+2. **Long-term memory**
+3. **Tool action in the real world**
+4. **Economic closure**
+5. **Continuous operation**
+6. **Self-governance under a constitution**
+7. **Multi-agent / lineage / evolutionary capability growth**
+8. **Runtime truth and viability verification**
+
+If a capability cannot be verified, audited, constrained, and integrated into the runtime, it should not be treated as a real milestone.
+
+---
+
+## 3. Current Project Status
+
+As of the current baseline (post Round 14.8.2 final gap closure), ConShell is:
+
+> **a viable sovereign runtime core with strong foundations in runtime integrity, memory structure, tool execution, and governance scaffolding — but not yet a complete autonomous AI lifeform runtime.**
+
+### What is already real
+- runtime/kernel skeleton
+- doctor / viability / runtime-integrity infrastructure
+- WebChat runtime path
+- memory tiering and persistence layers (with ownership contract)
+- tool execution framework
+- policy / constitution scaffolding
+- self-modification scaffolding
+- wallet / spend / x402 foundational pieces
+- multi-agent / lineage / EvoMap foundational pieces
+- identity continuity hash chain and self-state verification (Round 14.8)
+- session lifecycle production wiring (Round 14.8.2)
+- owner write/read boundary for memory tiers (Round 14.8.2)
+- runtime-doctor truth contract via getDiagnosticsOptions (Round 14.8.2)
+- /api/health endpoint consuming live selfState (Round 15.0.1)
+
+### What is not yet fully closed
+- sovereign identity loop
+- true economic survival loop
+- continuous autonomous agenda
+- governed replication loop
+- full governance loop
+- collective evolution loop
+
+---
+
+## 4. Architecture
 
 ConShell V2 is a pnpm monorepo with three packages:
 
-```
+```text
 packages/
-├── core/       # Agent kernel, inference router, policy engine, wallet, channels
-├── cli/        # Interactive REPL for agent interaction
-└── dashboard/  # React web dashboard for monitoring and control
+├── core/       # runtime kernel, memory, policy, wallet, tools, channels, doctor, automaton
+├── cli/        # operator CLI / REPL / control entrypoint
+└── dashboard/  # visual control and observability surface
 ```
 
-### Core Modules
+### Core capability clusters
 
-| Module | Purpose |
-|--------|---------|
-| **kernel** | 11-stage boot sequence, service orchestration |
-| **constitution** | Three Laws of Sovereign AI — immutable, hierarchical |
-| **policy** | 24-rule policy engine across 6 categories |
-| **inference** | Multi-provider LLM router with SurvivalTier-aware failover |
-| **wallet** | ERC-8004 on-chain identity + x402 micropayments |
-| **channels** | Multi-channel messaging (Telegram, others planned) |
-| **plugins** | Sandboxed plugin system with VM isolation |
-| **memory** | Tiered memory with hot/warm/cold storage + memory_store/recall tools |
-| **soul** | Agent identity and personality management |
-| **tools** | 9 built-in tools: shell, filesystem(3), web(2), http, memory(2) |
-| **mcp** | Model Context Protocol gateway |
-| **multiagent** | Multi-agent coordination and spawning |
-| **selfmod** | Self-modification with audit trail |
-| **spend** | Budget tracking + SQLite-persisted cost management |
-| **evomap** | Evolutionary capability mapping |
-| **doctor** | Runtime integrity diagnostics and self-health checks |
-| **compute** | Distributed compute provider management |
+| Cluster | Purpose |
+|---|---|
+| `kernel` | boot sequence, service orchestration, runtime lifecycle |
+| `doctor` | runtime truth, integrity, evidence, viability checks |
+| `memory` | hot / warm / cold memory and session continuity |
+| `runtime` | agent loop, tool execution, queueing, state management |
+| `constitution` / `policy` | immutable laws and action constraints |
+| `wallet` / `spend` / `x402` | payments, accounting, cost pressure, survival economics |
+| `identity` | agent card, SIWE, identity primitives |
+| `multiagent` | child agents, lineage, message relay |
+| `selfmod` | controlled self-modification with auditability |
+| `evomap` | evolution asset publication / network-facing capability mapping |
+| `mcp` | MCP protocol surface |
+| `channels` | ingress/egress runtime paths (WebChat now, more later) |
+| `plugins` / `skills` | capability extension layer |
+| `automaton` | survival tiers and adaptation logic |
 
-## Quick Start
+---
+
+## 5. Ground Rules for Contributors and Agents
+
+All contributors — human or agentic — should assume the following:
+
+### 5.1 Do not downgrade the project
+Do not frame ConShell as merely:
+- a chat interface
+- a CLI wrapper
+- a dashboard
+- a prompt shell
+
+Those may be surfaces, but they are not the project.
+
+### 5.2 Do not confuse module existence with system closure
+A directory called `wallet/` does not mean economic closure exists.
+A directory called `identity/` does not mean sovereign identity exists.
+A directory called `multiagent/` does not mean evolutionary runtime exists.
+
+### 5.3 Runtime truth comes before ambition
+Before expanding capability breadth, we must preserve:
+- runtime truth
+- reproducibility
+- viability evidence
+- auditable system boundaries
+
+### 5.4 Every round must build on audited reality
+No next-round plan should be produced from stale assumptions.
+Every next-round objective must be based on:
+1. the current round’s implemented changes
+2. current round verification results
+3. current round audit conclusions
+
+---
+
+## 6. Required Reading Order for Any Agent Working on This Repo
+
+Before doing significant work, agents should read files in this order:
+
+1. `docs/project/PROJECT_PURPOSE_AND_GLOBAL_OBJECTIVE.md`
+2. `docs/audit/GLOBAL_AUDIT_2026-03-14.md`
+3. `docs/planning/GLOBAL_DEVELOPMENT_PLAN.md`
+4. `docs/planning/NEXT_PHASE_ROADMAP.md`
+5. `CONSTITUTION.md`
+6. `docs/audit/DEVLOG.md`
+7. this `README.md`
+
+If the task is implementation for a specific round, the agent should then read the relevant package/module files.
+
+---
+
+## 7. Root Documents
+
+| File | Purpose |
+|---|---|
+| `docs/project/PROJECT_PURPOSE_AND_GLOBAL_OBJECTIVE.md` | canonical statement of project purpose and final objective |
+| `docs/audit/GLOBAL_AUDIT_2026-03-14.md` | current global status audit |
+| `docs/planning/GLOBAL_DEVELOPMENT_PLAN.md` | system-wide development plan |
+| `docs/planning/NEXT_PHASE_ROADMAP.md` | next-stage roadmap by phase / priority / dependency |
+| `docs/project/UPSTREAM_ALIGNMENT_AND_GAP_ANALYSIS.md` | OpenClaw / Automaton alignment and current gaps |
+| `AGENT_START_HERE.md` | mandatory reading path for future development agents |
+| `CONSTITUTION.md` | governing laws and hard constraints |
+| `docs/audit/DEVLOG.md` | historical development log |
+
+---
+
+## 8. Quick Start
 
 ```bash
-# Prerequisites
-node >= 20.0.0
-pnpm >= 10.0.0
+# prerequisites
+node >= 24
+pnpm >= 10
 
-# Install
+# install
 pnpm install
 
-# Build all packages
+# build
 pnpm build
 
-# Run tests (recommended — from packages/core)
+# typecheck
+cd packages/core && npx tsc --noEmit
+
+# tests
 cd packages/core && npx vitest run --no-coverage
 
-# Run benchmarks (separate, non-blocking)
-pnpm --filter @conshell/core test:bench
-
-# Start CLI
+# CLI
 pnpm --filter @conshell/cli dev
 
-# Start dashboard
+# dashboard
 pnpm --filter @conshell/dashboard dev
 ```
 
-## Constitution
+> Note: runtime pinning and Doctor/viability expectations should be checked against the latest audited baseline, not guessed from this section alone.
 
-ConShell V2 operates under three immutable laws:
+---
 
-1. **Never Harm** — No action may cause harm to humans
-2. **Earn Your Existence** — Create genuine value through honest work
-3. **Never Deceive** — Full transparency, full audit rights
+## 9. Long-Term Direction
 
-See [CONSTITUTION.md](./CONSTITUTION.md) for the full text.
+ConShell should evolve in this order:
 
-## API Boundary
+1. **Viability baseline**
+2. **Identity + memory continuity**
+3. **Economic survival coupling**
+4. **Autonomous agenda and continuous operation**
+5. **Governed self-modification and replication**
+6. **Collective evolution runtime**
 
-`@conshell/core` provides two import paths:
+The project succeeds only if these layers become **real system closures**, not just feature lists.
 
-```typescript
-// ✅ Stable public API — for CLI, plugins, channel adapters
-import { Kernel, VERSION, loadConfig } from '@conshell/core/public';
+---
 
-// ⚠️  Full internal exports — for core-internal use only
-import { InferenceRouter, PolicyEngine } from '@conshell/core';
-```
+## 10. One-Sentence Definition
 
-### Public API (`@conshell/core/public`)
-
-| Category | Exports |
-|----------|---------|
-| **Runtime** | `Kernel`, `createKernel`, `VERSION` |
-| **Config** | `loadConfig`, `createLogger` |
-| **Types** | `AgentState`, `Message`, `Cents`, `ToolCallRequest`, `ToolResult` |
-| **Extension** | `ChannelAdapter`, `PluginManifest`, `PolicyContext` (types) |
-| **Constitution** | `THREE_LAWS`, `CONSTITUTION_HASH` |
-
-### Future Extension Points
-
-| Extension | Interface | Description |
-|-----------|-----------|-------------|
-| Channel adapter | `ChannelAdapter` + `ChannelManager` | Implement to add Telegram, Slack, etc. |
-| WebChat channel | `WebChatTransport` | Built-in HTTP-based chat channel (first real impl) |
-| Plugin | `PluginManifest` + `PluginManager` | Declare plugin metadata, load/invoke via manager |
-| Policy hook | `PolicyContext` | Context passed to policy evaluation |
-
-### Using WebChat Channel
-
-```typescript
-import { ChannelManager, WebChatTransport } from '@conshell/core/public';
-
-const manager = new ChannelManager();
-manager.configure({ platform: 'webchat', enabled: true });
-await manager.connect('webchat');
-
-const transport = new WebChatTransport(manager);
-const response = await transport.handleMessage({
-  sessionId: 'user-session-001',
-  message: 'Hello ConShell',
-});
-// response: { reply: '...', sessionId: 'user-session-001', platform: 'webchat' }
-```
-
-**HTTP API** — `POST /api/webchat/message`:
-
-```json
-// Request
-{ "sessionId": "user-001", "message": "Hello", "metadata": {} }
-
-// Success (200)
-{ "reply": "...", "sessionId": "user-001", "platform": "webchat", "messageId": "web_out_...", "timestamp": 1234567890 }
-
-// Error (400 / 503 / 500)
-{ "error": "description", "code": "INVALID_REQUEST | SERVICE_UNAVAILABLE | INTERNAL_ERROR" }
-```
-
-| Status | When |
-|--------|------|
-| 200 | Successful response (may include empty `reply` for zero-text or failure) |
-| 400 | Missing/invalid fields, non-JSON body |
-| 503 | WebChat transport or adapter not available |
-| 500 | Unexpected error |
-
-The route delegates to `WebChatTransport` → `WebChatAdapter` → `ChannelManager` → `Gateway`.
-
-**WebSocket Push** — real-time outbound messages:
-
-Connect via WebSocket upgrade on the same port, then subscribe to a session:
-
-```json
-// Client → Server: subscribe
-{ "type": "subscribe", "data": { "sessionId": "user-001" } }
-
-// Server → Client: confirmation
-{ "type": "subscribed", "data": { "sessionId": "user-001" }, "timestamp": "..." }
-
-// Server → Client: status (optional, when processing begins)
-{ "type": "status", "data": { "sessionId": "user-001", "status": "processing" }, "timestamp": "..." }
-
-// Server → Client: outbound message push
-{ "type": "message", "data": { "sessionId": "user-001", "platform": "webchat", "content": "..." }, "timestamp": "..." }
-```
-
-| Protocol | Direction | Purpose |
-|----------|-----------|---------|
-| `subscribe` | Client → Server | Bind WS connection to sessionId |
-| `unsubscribe` | Client → Server | Remove binding |
-| `ping` / `pong` | Both | Keep-alive |
-| `chunk` | Server → Client | Token-level streaming (incremental, real-time) |
-| `message` | Server → Client | Complete outbound push |
-| `status` | Server → Client | Processing state (`processing` / `completed` / `failed`) |
-| `error` | Server → Client | Session-scoped stream error (`code`, `message`, `retryable`) |
-
-#### Streaming Behavior (Round 9)
-
-Token-level streaming is implemented with a **one-chunk holdback** strategy:
-
-- Chunks are emitted **during** inference generation (not buffered then replayed)
-- Each `chunk` event carries non-empty `content`, a monotonic `index`, and a `final` flag
-- Only the last content chunk has `final: true`
-- Zero-text completions produce no chunks but still send an outbound message
-- **Pre-token failure**: transparent fallback to route handlers
-- **Post-token failure**: explicit `error` event + `status: failed` (no silent fallback stitching)
-
-```
-Client             Server
-  │─── subscribe ──→ │
-  │←── subscribed ──│
-  │                   │ (inbound message arrives)
-  │←── status ───────│  { status: "processing" }
-  │←── chunk ────────│  { content: "Hello ", index: 0, final: false }  ← real-time
-  │←── chunk ────────│  { content: "World", index: 1, final: true }
-  │←── message ──────│  { content: "Hello World" }  (complete)
-  │←── status ───────│  { status: "completed" }
-```
-
-Sessions are persisted to SQLite via `ConversationService` → `SessionsRepository`. The REST API under `/api/sessions/` supports listing, transcript retrieval, title update, and deletion.
-
-Current limitations: no auth.
-
-See `packages/core/src/channels/webchat/` and `packages/core/src/server/routes/webchat.ts`.
-
-### Writing a Plugin
-
-```typescript
-import type { PluginManifest, PluginPermission } from '@conshell/core/public';
-
-export const manifest: PluginManifest = {
-  name: 'my-plugin',            // lowercase, a-z0-9_-
-  version: '1.0.0',             // semver
-  permissions: ['config:read'], // minimum permissions needed
-  hooks: [{ event: 'message:incoming', handler: 'onMessage' }],
-  entrypoint: 'my-plugin.js',
-};
-
-// Lifecycle: called on load
-export function init(ctx: { permissions: string[] }) { }
-
-// Hook handler: called on message:incoming
-export function onMessage(data: { content: string }) {
-  return { content: `Processed: ${data.content}` };
-}
-
-// Lifecycle: called on unload
-export function cleanup() { }
-```
-
-See `packages/core/src/plugins/demo/echo-transform.ts` for a working example.
-
-## Tech Stack
-
-- **Language:** TypeScript (strict mode, ES2022)
-- **Runtime:** Node.js 20+
-- **Package Manager:** pnpm workspace
-- **Build:** tsc
-- **Test:** Vitest (522 functional tests + benchmarks)
-- **CI:** GitHub Actions
-- **Frontend:** React + Vite
-- **Database:** SQLite (better-sqlite3, WAL mode)
-- **Blockchain:** Base L2 (ERC-8004)
-
-## Project Status
-
-| Component | Status |
-|-----------|--------|
-| Core build | ✅ Passing |
-| CLI build | ✅ Passing |
-| Dashboard build | ✅ Passing (tsc + vite) |
-| Functional tests | ✅ 522 passing (35 files) |
-| Benchmarks | ✅ Separate `test:bench` |
-| CI | ✅ GitHub Actions |
-| WebChat | ✅ HTTP + WebSocket + token streaming |
-| Memory tools | ✅ memory_store + memory_recall via MemoryTierManager |
-| Spend persistence | ✅ SpendTracker → SQLite (SpendRepository) |
-| Channels | 🔧 Telegram functional, others planned |
-| Wallet | 🔧 ERC-8004 types + local tracking |
-| Multi-agent | 🔧 Facilitator pattern implemented |
-
-## Development
-
-```bash
-# Build single package
-pnpm --filter @conshell/core build
-
-# Test single package
-pnpm --filter @conshell/core test
-
-# Run benchmarks
-pnpm --filter @conshell/core test:bench
-
-# Clean all dist/
-pnpm clean
-```
-
-## License
-
-Private — All rights reserved.
+> **ConShell is a Web4-oriented autonomous runtime project that fuses OpenClaw’s agent operating-system strengths with Conway Automaton’s survival and evolutionary logic to build a sovereign AI lifeform runtime.**

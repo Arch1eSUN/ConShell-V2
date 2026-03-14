@@ -158,6 +158,12 @@ export class SoulSystem {
   private lastEvolutionTime = 0;
   private evolutionCount = 0;
 
+  /**
+   * Callback fired after a successful soul evolution.
+   * Wired by kernel to advance ContinuityService chain.
+   */
+  onSoulEvolved: ((raw: string, version: number) => void) | null = null;
+
   constructor(db: Database.Database, logger: Logger, opts?: SoulSystemOptions) {
     this.logger = logger.child('soul');
     this.soulPath = opts?.soulPath ?? join(process.env['HOME'] ?? '.', '.conshell', 'SOUL.md');
@@ -314,6 +320,11 @@ export class SoulSystem {
       changes: diff.totalChanges,
       version: this.evolutionCount,
     });
+
+    // Notify continuity system
+    if (this.onSoulEvolved) {
+      this.onSoulEvolved(newRaw, this.evolutionCount);
+    }
 
     return {
       success: true,

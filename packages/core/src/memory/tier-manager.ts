@@ -55,13 +55,22 @@ export interface TierManagerOptions {
   warmLimit?: number;
   /** Cold 查询限制 (默认 10) */
   coldLimit?: number;
+  /** Identity anchor ID — propagated into memory writes */
+  ownerId?: string;
+  /**
+   * Owner-local budget ratio (Round 15.1 — Goal D).
+   * When ownerId is set, this fraction of maxContextTokens is reserved for
+   * owner-scoped tiers (summaries + episodes). The remainder goes to shared
+   * tiers (facts + relationships + skills). Default: 0.6 (60% owner-local).
+   */
+  ownerBudgetRatio?: number;
 }
 
 // ── TierManager ───────────────────────────────────────────────────────
 
 export class MemoryTierManager {
   private logger: Logger;
-  private opts: Required<TierManagerOptions>;
+  private opts: Required<Omit<TierManagerOptions, 'ownerId'>> & { ownerId: string | undefined; ownerBudgetRatio: number };
 
   // Repos (warm/cold — backed by SQLite)
   private workingRepo: WorkingMemoryRepository;
@@ -82,6 +91,8 @@ export class MemoryTierManager {
       hotLimit: opts?.hotLimit ?? 50,
       warmLimit: opts?.warmLimit ?? 20,
       coldLimit: opts?.coldLimit ?? 10,
+      ownerId: opts?.ownerId,
+      ownerBudgetRatio: opts?.ownerBudgetRatio ?? 0.6,
     };
 
     this.workingRepo = new WorkingMemoryRepository(db);
@@ -91,6 +102,16 @@ export class MemoryTierManager {
     this.relationshipRepo = new RelationshipMemoryRepository(db);
     this.soulRepo = new SoulHistoryRepository(db);
     this.sessionRepo = new SessionSummariesRepository(db);
+  }
+
+  /** Total episodic memory count — used by Kernel for session continuity wiring. */
+  getEpisodeCount(): number {
+    return this.episodicRepo.count();
+  }
+
+  /** Episode count scoped to a specific owner (Goal D — Round 15.0.2). */
+  getEpisodeCountForOwner(ownerId: string): number {
+    return this.episodicRepo.countByOwner(ownerId);
   }
 
   // ── Hot Tier (per-session working memory) ─────────────────────────
@@ -124,19 +145,20 @@ export class MemoryTierManager {
     }
   }
 
-  // ── 上下文构建 ────────────────────────────────────────────────────
-
   /**
-   * 构建LLM上下文
-   * 按优先级填充 token 预算：
-   * 1. 会话摘要
-   * 2. 语义事实
-   * 3. 实体关系
-   * 4. 近期事件
-   * 5. 技能知识
+   * 构建LLM上下文 (Round 15.1.1 — hardened)
+   *
+   * Budget strategy (Round 15.1.1 — dynamic reflow):
+   * - When ownerId is set: initial split 60/40 (owner/shared)
+   * - After first pass: leftover from either bucket flows to the other
+   * - When no ownerId: unified budget
+   *
+   * Dedup strategy (Round 15.1.1 — soft dedup):
+   * - Overlapping episodes are demoted with [echo] prefix, not deleted
+   * - Non-overlapping episodes packed first, then demoted ones fill remaining budget
    */
   buildContext(): MemoryContext {
-    let tokenBudget = this.opts.maxContextTokens;
+    const totalBudget = this.opts.maxContextTokens;
     const ctx: MemoryContext = {
       sessionSummaries: [],
       relevantFacts: [],
@@ -146,59 +168,236 @@ export class MemoryTierManager {
       estimatedTokens: 0,
     };
 
-    // 1. Session summaries (warm) — uses findRecent()
-    const summaries: SessionSummaryRow[] = this.sessionRepo.findRecent(5);
+    // Budget split: owner-local vs shared
+    const hasOwner = !!this.opts.ownerId;
+    let ownerBudget = hasOwner
+      ? Math.floor(totalBudget * this.opts.ownerBudgetRatio)
+      : totalBudget;
+    let sharedBudget = hasOwner
+      ? totalBudget - ownerBudget
+      : totalBudget;
+
+    // ── Pass 1: Owner-scoped tiers ──────────────────────────────────
+
+    // 1. Session summaries
+    const summaries: SessionSummaryRow[] = this.opts.ownerId
+      ? this.sessionRepo.findRecentByOwner(this.opts.ownerId, 5)
+      : this.sessionRepo.findRecent(5);
     for (const s of summaries) {
       const tokens = this.estimateTokens(s.summary);
-      if (tokenBudget - tokens < 0) break;
+      if (ownerBudget - tokens < 0) break;
       ctx.sessionSummaries.push(s.summary);
-      tokenBudget -= tokens;
+      ownerBudget -= tokens;
     }
 
-    // 2. Semantic facts (warm) — uses findAll(), then slice
+    // 2. Episodic memories — soft dedup: demote overlapping, don't delete
+    const episodes: EpisodicMemoryRow[] = this.opts.ownerId
+      ? this.episodicRepo.findTopByRelevanceForOwner(this.opts.ownerId, this.opts.warmLimit)
+      : this.episodicRepo.findTopByRelevance(this.opts.warmLimit);
+    const demotedEpisodes: string[] = [];
+    for (const e of episodes) {
+      const text = `[${e.event_type}] ${e.content}`;
+      if (this.isOverlappingWithSummaries(e.content, ctx.sessionSummaries)) {
+        demotedEpisodes.push(`[echo] ${text}`); // soft dedup: demote, don't delete
+        continue;
+      }
+      const tokens = this.estimateTokens(text);
+      if (ownerBudget - tokens < 0) break;
+      ctx.recentEpisodes.push(text);
+      ownerBudget -= tokens;
+    }
+
+    // ── Pass 1: Shared tiers ────────────────────────────────────────
+
+    // 3. Semantic facts
     const allFacts: SemanticMemoryRow[] = this.semanticRepo.findAll();
     const facts = allFacts.slice(0, this.opts.warmLimit);
+    const skippedFacts: Array<{ text: string; tokens: number }> = [];
     for (const f of facts) {
       const text = `[${f.category}/${f.key}] ${f.value}`;
       const tokens = this.estimateTokens(text);
-      if (tokenBudget - tokens < 0) break;
+      if (sharedBudget - tokens < 0) {
+        skippedFacts.push({ text, tokens });
+        continue;
+      }
       ctx.relevantFacts.push(text);
-      tokenBudget -= tokens;
+      sharedBudget -= tokens;
     }
 
-    // 3. Relationships (warm) — uses findAll(), then slice
+    // 4. Relationships
     const allRels: RelationshipMemoryRow[] = this.relationshipRepo.findAll();
     const rels = allRels.slice(0, this.opts.warmLimit);
+    const skippedRels: Array<{ text: string; tokens: number }> = [];
     for (const r of rels) {
       const text = `${r.entity_id} (${r.entity_type}) trust:${r.trust_score} interactions:${r.interaction_count}`;
       const tokens = this.estimateTokens(text);
-      if (tokenBudget - tokens < 0) break;
+      if (sharedBudget - tokens < 0) {
+        skippedRels.push({ text, tokens });
+        continue;
+      }
       ctx.relationships.push(text);
-      tokenBudget -= tokens;
+      sharedBudget -= tokens;
     }
 
-    // 4. Episodic memories (warm) — uses findTopByImportance()
-    const episodes: EpisodicMemoryRow[] = this.episodicRepo.findTopByImportance(this.opts.warmLimit);
-    for (const e of episodes) {
-      const text = `[${e.event_type}] ${e.content}`;
-      const tokens = this.estimateTokens(text);
-      if (tokenBudget - tokens < 0) break;
-      ctx.recentEpisodes.push(text);
-      tokenBudget -= tokens;
-    }
-
-    // 5. Procedural knowledge (cold) — uses findAll(), then slice
+    // 5. Procedural knowledge
     const allProcs: ProceduralMemoryRow[] = this.proceduralRepo.findAll();
     const procedures = allProcs.slice(0, this.opts.coldLimit);
     for (const p of procedures) {
       const text = `Skill "${p.name}": success=${p.success_count} fail=${p.failure_count}`;
       const tokens = this.estimateTokens(text);
-      if (tokenBudget - tokens < 0) break;
+      if (sharedBudget - tokens < 0) break;
       ctx.skills.push(text);
-      tokenBudget -= tokens;
+      sharedBudget -= tokens;
     }
 
-    ctx.estimatedTokens = this.opts.maxContextTokens - tokenBudget;
+    // ── Pass 2: Dynamic budget reflow (Round 15.1.1) ────────────────
+    if (hasOwner) {
+      // Owner leftover → try fitting skipped shared items
+      for (const item of [...skippedFacts]) {
+        if (ownerBudget - item.tokens >= 0) {
+          ctx.relevantFacts.push(item.text);
+          ownerBudget -= item.tokens;
+        }
+      }
+      for (const item of [...skippedRels]) {
+        if (ownerBudget - item.tokens >= 0) {
+          ctx.relationships.push(item.text);
+          ownerBudget -= item.tokens;
+        }
+      }
+
+      // Shared leftover → try fitting demoted episodes
+      for (const text of demotedEpisodes) {
+        const tokens = this.estimateTokens(text);
+        if (sharedBudget - tokens >= 0) {
+          ctx.recentEpisodes.push(text);
+          sharedBudget -= tokens;
+        }
+      }
+    } else {
+      // Unified budget: just try fitting demoted episodes with remaining budget
+      for (const text of demotedEpisodes) {
+        const tokens = this.estimateTokens(text);
+        if (ownerBudget - tokens >= 0) {
+          ctx.recentEpisodes.push(text);
+          ownerBudget -= tokens;
+        }
+      }
+    }
+
+    ctx.estimatedTokens = totalBudget - ownerBudget - sharedBudget;
+    return ctx;
+  }
+
+  /**
+   * P2-3: Build memory context explicitly scoped to the given ownerId.
+   * Round 15.1.1 hardened: dynamic reflow + soft dedup.
+   */
+  buildContextForOwner(ownerId: string): MemoryContext {
+    const totalBudget = this.opts.maxContextTokens;
+    const ctx: MemoryContext = {
+      sessionSummaries: [],
+      relevantFacts: [],
+      relationships: [],
+      recentEpisodes: [],
+      skills: [],
+      estimatedTokens: 0,
+    };
+
+    // Budget split: always 60/40 since we have an explicit owner
+    let ownerBudget = Math.floor(totalBudget * this.opts.ownerBudgetRatio);
+    let sharedBudget = totalBudget - ownerBudget;
+
+    // ── Pass 1: Owner-scoped tiers ─────────────────────────────────
+
+    // 1. Owner-scoped session summaries
+    const summaries = this.sessionRepo.findRecentByOwner(ownerId, 5);
+    for (const s of summaries) {
+      const tokens = this.estimateTokens(s.summary);
+      if (ownerBudget - tokens < 0) break;
+      ctx.sessionSummaries.push(s.summary);
+      ownerBudget -= tokens;
+    }
+
+    // 2. Owner-scoped episodic memories — soft dedup
+    const episodes = this.episodicRepo.findTopByRelevanceForOwner(ownerId, this.opts.warmLimit);
+    const demotedEpisodes: string[] = [];
+    for (const e of episodes) {
+      const text = `[${e.event_type}] ${e.content}`;
+      if (this.isOverlappingWithSummaries(e.content, ctx.sessionSummaries)) {
+        demotedEpisodes.push(`[echo] ${text}`);
+        continue;
+      }
+      const tokens = this.estimateTokens(text);
+      if (ownerBudget - tokens < 0) break;
+      ctx.recentEpisodes.push(text);
+      ownerBudget -= tokens;
+    }
+
+    // ── Pass 1: Shared tiers ──────────────────────────────────────
+
+    // 3. Shared semantic facts
+    const facts = this.semanticRepo.findAll().slice(0, this.opts.warmLimit);
+    const skippedFacts: Array<{ text: string; tokens: number }> = [];
+    for (const f of facts) {
+      const text = `[${f.category}/${f.key}] ${f.value}`;
+      const tokens = this.estimateTokens(text);
+      if (sharedBudget - tokens < 0) {
+        skippedFacts.push({ text, tokens });
+        continue;
+      }
+      ctx.relevantFacts.push(text);
+      sharedBudget -= tokens;
+    }
+
+    // 4. Shared relationships
+    const rels = this.relationshipRepo.findAll().slice(0, this.opts.warmLimit);
+    const skippedRels: Array<{ text: string; tokens: number }> = [];
+    for (const r of rels) {
+      const text = `${r.entity_id} (${r.entity_type}) trust:${r.trust_score} interactions:${r.interaction_count}`;
+      const tokens = this.estimateTokens(text);
+      if (sharedBudget - tokens < 0) {
+        skippedRels.push({ text, tokens });
+        continue;
+      }
+      ctx.relationships.push(text);
+      sharedBudget -= tokens;
+    }
+
+    // 5. Shared procedural knowledge
+    const procs = this.proceduralRepo.findAll().slice(0, this.opts.coldLimit);
+    for (const p of procs) {
+      const text = `Skill "${p.name}": success=${p.success_count} fail=${p.failure_count}`;
+      const tokens = this.estimateTokens(text);
+      if (sharedBudget - tokens < 0) break;
+      ctx.skills.push(text);
+      sharedBudget -= tokens;
+    }
+
+    // ── Pass 2: Dynamic budget reflow ───────────────────────────────
+    // Owner leftover → skipped shared items
+    for (const item of [...skippedFacts]) {
+      if (ownerBudget - item.tokens >= 0) {
+        ctx.relevantFacts.push(item.text);
+        ownerBudget -= item.tokens;
+      }
+    }
+    for (const item of [...skippedRels]) {
+      if (ownerBudget - item.tokens >= 0) {
+        ctx.relationships.push(item.text);
+        ownerBudget -= item.tokens;
+      }
+    }
+    // Shared leftover → demoted episodes
+    for (const text of demotedEpisodes) {
+      const tokens = this.estimateTokens(text);
+      if (sharedBudget - tokens >= 0) {
+        ctx.recentEpisodes.push(text);
+        sharedBudget -= tokens;
+      }
+    }
+
+    ctx.estimatedTokens = totalBudget - ownerBudget - sharedBudget;
     return ctx;
   }
 
@@ -212,7 +411,7 @@ export class MemoryTierManager {
 
   /** 存储事件到 episodic 层 */
   storeEpisode(eventType: string, content: string, importance?: number, sessionId?: string): void {
-    this.episodicRepo.insert({ eventType, content, importance, sessionId });
+    this.episodicRepo.insert({ eventType, content, importance, sessionId, ownerId: this.opts.ownerId });
     this.logger.debug('Stored episodic memory', { eventType });
   }
 
@@ -228,15 +427,15 @@ export class MemoryTierManager {
     this.logger.debug('Stored procedural knowledge', { name });
   }
 
-  /** 保存会话摘要 */
+  /** 保存会话摘要 — owned tier: always writes owner_id when set */
   saveSessionSummary(sessionId: string, summary: string, outcome?: string): void {
-    this.sessionRepo.upsert(sessionId, summary, outcome);
-    this.logger.debug('Saved session summary', { sessionId });
+    this.sessionRepo.upsert(sessionId, summary, outcome, this.opts.ownerId);
+    this.logger.debug('Saved session summary', { sessionId, ownerId: this.opts.ownerId });
   }
 
   /** 保存Soul历史快照 — 需要contentHash */
   saveSoulSnapshot(content: string, contentHash: string, alignmentScore?: number): void {
-    this.soulRepo.insert({ content, contentHash, alignmentScore });
+    this.soulRepo.insert({ content, contentHash, alignmentScore, ownerId: this.opts.ownerId });
     this.logger.debug('Saved soul snapshot');
   }
 
@@ -259,5 +458,24 @@ export class MemoryTierManager {
   /** 粗略 token 估算 (4 chars ≈ 1 token) */
   private estimateTokens(text: string): number {
     return Math.ceil(text.length / 4);
+  }
+
+  /**
+   * Dedup helper (Round 15.1 — Goal B): check if episode content
+   * substantially overlaps with any already-included session summary.
+   * Bidirectional 100-char prefix comparison — explainable and testable.
+   */
+  private isOverlappingWithSummaries(episodeContent: string, summaries: string[]): boolean {
+    if (summaries.length === 0) return false;
+    const episodeNorm = episodeContent.toLowerCase().slice(0, 100);
+    if (episodeNorm.length < 20) return false; // too short to be meaningful overlap
+    for (const summary of summaries) {
+      const summaryNorm = summary.toLowerCase();
+      // Bidirectional: episode prefix in summary OR summary prefix in episode
+      if (summaryNorm.includes(episodeNorm) || episodeNorm.includes(summaryNorm.slice(0, 100))) {
+        return true;
+      }
+    }
+    return false;
   }
 }

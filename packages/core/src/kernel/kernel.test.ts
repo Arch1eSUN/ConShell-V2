@@ -42,7 +42,7 @@ function createMockMemory(): MemoryTierManager {
 
 describe('Kernel', () => {
   describe('BootStage types', () => {
-    it('should export BootStage type with 11 stages', async () => {
+    it('should export BootStage type with 12 stages', async () => {
       const mod = await import('../kernel/index.js');
       // Verify type exports exist via runtime export check
       expect(mod.Kernel).toBeDefined();

@@ -1,12 +1,38 @@
 /**
- * Identity — Agent身份卡 + SIWE + 注册表 (完整版)
+ * Identity — Agent身份卡 + SIWE + 注册表 + 身份锚 (完整版)
  *
  * 功能:
  * - Agent Card 创建与验证
  * - SIWE (EIP-4361) 身份验证
  * - 链上身份注册 (via ERC-8004)
  * - Agent 发现服务
+ * - ★ Identity Anchor + Continuity Record (Round 14.4)
  */
+
+// ── Identity Anchor (Round 14.4) ─────────────────────────────────────
+export {
+  createIdentityAnchor,
+  createContinuityRecord,
+  advanceContinuityRecord,
+  verifyContinuityChain,
+  computeRecordHash,
+  sha256,
+} from './anchor.js';
+export type {
+  IdentityAnchor,
+  ContinuityRecord,
+  ChainVerificationResult,
+} from './anchor.js';
+
+export { IdentityAnchorRepository, ContinuityRecordRepository } from './anchor.repo.js';
+export type { IdentityAnchorRow, ContinuityRecordRow } from './anchor.repo.js';
+
+// ── PersistentAgentRegistry (Phase 2 — P2-1) ────────────────────────
+export { PersistentAgentRegistry } from './persistent-registry.js';
+
+// ── ContinuityService (Round 14.5) ───────────────────────────────────
+export { ContinuityService } from './continuity-service.js';
+export type { SelfState, SelfMode, SelfExplanation } from './continuity-service.js';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import { createSiweMessage, signSiweMessage, generateNonce, type SiweMessage } from '../wallet/index.js';
 

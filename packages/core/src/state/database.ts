@@ -421,6 +421,84 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  // v6: Identity Anchor + Continuity Records + Memory-Identity Binding
+  {
+    version: 6,
+    description: 'Identity anchor, continuity records (hash-chained), owner_id on memory tables',
+    apply(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS identity_anchor (
+          id             TEXT PRIMARY KEY,
+          name           TEXT NOT NULL,
+          wallet_address TEXT,
+          soul_hash      TEXT NOT NULL,
+          created_at     TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS continuity_records (
+          version              INTEGER PRIMARY KEY,
+          identity_id          TEXT NOT NULL REFERENCES identity_anchor(id),
+          soul_hash            TEXT NOT NULL,
+          soul_version         INTEGER NOT NULL DEFAULT 0,
+          session_count        INTEGER NOT NULL DEFAULT 0,
+          memory_episode_count INTEGER NOT NULL DEFAULT 0,
+          last_session_id      TEXT,
+          previous_hash        TEXT,
+          record_hash          TEXT NOT NULL,
+          created_at           TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cr_identity ON continuity_records(identity_id);
+      `);
+      // Add owner_id to memory tables (nullable, non-breaking)
+      // Use try/catch for each ALTER — column may already exist on re-run
+      const alterStatements = [
+        'ALTER TABLE episodic_memory ADD COLUMN owner_id TEXT',
+        'ALTER TABLE soul_history ADD COLUMN owner_id TEXT',
+        'ALTER TABLE session_summaries ADD COLUMN owner_id TEXT',
+      ];
+      for (const stmt of alterStatements) {
+        try { db.exec(stmt); } catch { /* column already exists — safe to ignore */ }
+      }
+    },
+  },
+  // v7: Lineage pre-embedding (Round 14.5)
+  {
+    version: 7,
+    description: 'Add lineage fields to identity_anchor for future child/replication support',
+    apply(db) {
+      const alterStatements = [
+        'ALTER TABLE identity_anchor ADD COLUMN parent_identity_id TEXT DEFAULT NULL',
+        'ALTER TABLE identity_anchor ADD COLUMN generation INTEGER DEFAULT 0',
+      ];
+      for (const stmt of alterStatements) {
+        try { db.exec(stmt); } catch { /* column already exists — safe to ignore */ }
+      }
+    },
+  },
+  // v8: Durable Agent Card Registry (Phase 2 — P2-1)
+  {
+    version: 8,
+    description: 'Persistent agent card registry (replaces InMemoryAgentRegistry)',
+    apply(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agent_cards (
+          id             TEXT PRIMARY KEY,
+          name           TEXT NOT NULL UNIQUE,
+          version        TEXT NOT NULL,
+          description    TEXT NOT NULL DEFAULT '',
+          wallet_address TEXT,
+          chain_id       INTEGER,
+          token_id       TEXT,
+          services_json  TEXT NOT NULL DEFAULT '[]',
+          nonce          TEXT NOT NULL,
+          created_at     TEXT NOT NULL,
+          signature      TEXT,
+          public_key     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_cards_name ON agent_cards(LOWER(name));
+      `);
+    },
+  },
 ];
 
 // ── Public API ─────────────────────────────────────────────────────────

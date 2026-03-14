@@ -20,6 +20,13 @@ import type { MemoryTierManager, MemoryContext } from '../memory/tier-manager.js
 import type { SoulSystem } from '../soul/system.js';
 import type { ConversationService } from '../channels/webchat/conversation-service.js';
 
+/** Minimal kernel surface consumed by AgentLoop for session lifecycle */
+export interface SessionLifecycleHost {
+  startSession(sessionId: string): void;
+  /** Optional: advance continuity + run consolidation after a turn completes */
+  checkpointTurn?(sessionId: string): void;
+}
+
 // ── Types ─────────────────────────────────────────────────────────────
 
 export interface AgentLoopOptions {
@@ -73,6 +80,11 @@ export class AgentLoop {
   private opts: Required<AgentLoopOptions>;
   private _turnCount = 0;
 
+  /** Kernel reference for session lifecycle integration */
+  private _lifecycleHost: SessionLifecycleHost | null = null;
+  /** Sessions already registered via startSession — prevents double-registration */
+  private _knownSessions = new Set<string>();
+
   constructor(
     router: InferenceRouter,
     toolExecutor: ToolExecutor,
@@ -97,6 +109,16 @@ export class AgentLoop {
   }
 
   /**
+   * Wire a Kernel (or any SessionLifecycleHost) for automatic session tracking.
+   * Once set, processMessage() will call host.startSession() on the first
+   * message received for each new sessionId — making session lifecycle
+   * a production runtime fact, not just a kernel-level ability.
+   */
+  setLifecycleHost(host: SessionLifecycleHost): void {
+    this._lifecycleHost = host;
+  }
+
+  /**
    * 处理一轮用户输入 (完整ReAct循环)
    * @param userMessage - 用户消息
    * @param sessionId  - 会话标识 (隔离 hot buffer 上下文)
@@ -108,7 +130,14 @@ export class AgentLoop {
 
     this.logger.info('Processing message', { turn: this._turnCount, sessionId: sid });
 
-    // 0. 推入 session-scoped 记忆
+    // 0a. Session lifecycle integration — register new sessions with Kernel
+    if (this._lifecycleHost && !this._knownSessions.has(sid)) {
+      this._knownSessions.add(sid);
+      this._lifecycleHost.startSession(sid);
+      this.logger.debug('Session registered via lifecycle host', { sessionId: sid });
+    }
+
+    // 0b. 推入 session-scoped 记忆
     this.memory.pushHot(sid, 'user', userMessage);
 
     // 1. 构建上下文
@@ -216,6 +245,9 @@ export class AgentLoop {
     };
 
     this.opts.onTurnComplete(turn);
+
+    // Round 15.0.2: checkpoint turn — advance continuity + consolidation
+    this._lifecycleHost?.checkpointTurn?.(sid);
 
     this.logger.info('Message processed', {
       turn: this._turnCount,
@@ -347,6 +379,10 @@ export class AgentLoop {
       };
 
       this.opts.onTurnComplete(turn);
+
+      // P2-2: advance continuity chain after each processed turn
+      this._lifecycleHost?.checkpointTurn?.(sid);
+
       yield { type: 'done' as const, turn };
 
     } catch (err) {
@@ -382,6 +418,39 @@ export class AgentLoop {
       parts.push('## Known Relationships');
       parts.push(...memCtx.relationships);
       parts.push('');
+    }
+
+    // Round 15.1.1: categorized episode rendering
+    if (memCtx.recentEpisodes.length > 0) {
+      const lessons: string[] = [];
+      const preferences: string[] = [];
+      const observations: string[] = [];
+
+      for (const ep of memCtx.recentEpisodes) {
+        if (/\[.*(?:error|fail|crash|bug|lesson).*\]/i.test(ep)) {
+          lessons.push(ep);
+        } else if (/\[.*(?:preference|config|setting|theme|chose).*\]/i.test(ep)) {
+          preferences.push(ep);
+        } else {
+          observations.push(ep);
+        }
+      }
+
+      if (lessons.length > 0) {
+        parts.push('## 🔄 Lessons Learned');
+        parts.push(...lessons);
+        parts.push('');
+      }
+      if (preferences.length > 0) {
+        parts.push('## ⚡ Preferences');
+        parts.push(...preferences);
+        parts.push('');
+      }
+      if (observations.length > 0) {
+        parts.push('## 📝 Recent Observations');
+        parts.push(...observations);
+        parts.push('');
+      }
     }
 
     if (memCtx.skills.length > 0) {

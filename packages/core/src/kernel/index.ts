@@ -31,6 +31,8 @@ import { TaskQueue } from '../runtime/task-queue.js';
 import { HttpServer } from '../server/http.js';
 import { WebSocketServer } from '../server/websocket.js';
 import type { EvoMapClient } from '../evomap/client.js';
+import { ContinuityService, type SelfState } from '../identity/continuity-service.js';
+import { ConsolidationPipeline } from '../memory/consolidation.js';
 
 // Sub-modules
 import { registerProviders } from './provider-factory.js';
@@ -44,6 +46,7 @@ export type BootStage =
   | 'database'
   | 'wallet'
   | 'soul'
+  | 'identity'
   | 'memory'
   | 'models'
   | 'automaton'
@@ -65,6 +68,8 @@ export interface KernelServices {
   db: any; // better-sqlite3 Database
   wallet: { address: string; chainId: number } | null;
   soul: SoulSystem;
+  continuity: ContinuityService;
+  selfState: SelfState;
   memory: MemoryTierManager;
   inference: InferenceRouter;
   stateMachine: AgentStateMachine;
@@ -102,9 +107,16 @@ export class Kernel {
   private services: KernelServices | null = null;
   private stages: BootStageResult[] = [];
   private _running = false;
+  private _sessionCount = 0;
+  private _lastSessionId: string | null = null;
+  private _ownerId: string | null = null;
+  private _consolidation: ConsolidationPipeline | null = null;
 
   /** 是否运行中 */
   get running(): boolean { return this._running; }
+
+  /** Current session count (tracked across boot lifecycle) */
+  get sessionCount(): number { return this._sessionCount; }
 
   /** 获取服务实例 (仅启动后可用) */
   get svc(): KernelServices {
@@ -181,12 +193,41 @@ export class Kernel {
 
       logger.info('Soul loaded', { name: soul.current.name });
 
-      // ── Step 6: Memory ──────────────────────────────────────────────
-      const memory = await this.runStage('memory', async () => {
-        return new MemoryTierManager(db, logger);
+      // ── Step 6: Identity / Continuity ─────────────────────────────────
+      const identityResult = await this.runStage('identity', async () => {
+        const continuity = new ContinuityService(db, logger);
+        const selfState = continuity.hydrate({
+          soulContent: soul.current.raw,
+          soulName: soul.current.name,
+          walletAddress: wallet?.address,
+        });
+
+        // Wire soul evolution → continuity chain advance
+        soul.onSoulEvolved = (raw: string, version: number) => {
+          continuity.advanceForSoulChange(raw, version);
+        };
+
+        return { continuity, selfState };
       });
 
-      logger.info('Memory initialized');
+      logger.info('Identity hydrated', {
+        mode: identityResult.selfState.mode,
+        chainValid: identityResult.selfState.chainValid,
+        chainLength: identityResult.selfState.chainLength,
+        identityId: identityResult.selfState.anchor.id,
+      });
+
+      // ── Step 7: Memory ──────────────────────────────────────────────
+      const ownerId = identityResult.selfState.anchor.id;
+      const memory = await this.runStage('memory', async () => {
+        return new MemoryTierManager(db, logger, { ownerId });
+      });
+
+      // Round 15.0.2 Goal B: Wire ConsolidationPipeline into runtime
+      this._ownerId = ownerId;
+      this._consolidation = new ConsolidationPipeline(db, logger);
+
+      logger.info('Memory initialized', { ownerId });
 
       // ── Step 7: Models / Inference ──────────────────────────────────
       const inference = await this.runStage('models', async () => {
@@ -280,7 +321,10 @@ export class Kernel {
 
       // ── Assemble services ───────────────────────────────────────────
       this.services = {
-        logger, config, db, wallet, soul, memory, inference,
+        logger, config, db, wallet, soul,
+        continuity: identityResult.continuity,
+        selfState: identityResult.selfState,
+        memory, inference,
         stateMachine: automaton.stateMachine,
         agentLoop: automaton.agentLoop,
         toolExecutor: automaton.toolExecutor,
@@ -293,6 +337,34 @@ export class Kernel {
 
       // Wake the agent
       automaton.stateMachine.boot();
+
+      // Wire session lifecycle: AgentLoop → Kernel.startSession()
+      automaton.agentLoop.setLifecycleHost(this);
+
+      // ── Health endpoint — closes getDiagnosticsOptions → Doctor production path ──
+      const kernel = this;
+      server.httpServer.get('/api/health', async (_req, res) => {
+        try {
+          const { runDiagnostics: runDx } = await import('../doctor/index.js');
+          const diagOpts = kernel.getDiagnosticsOptions() ?? undefined;
+          const projectRoot = process.cwd();
+          const coreRoot = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
+          const report = await runDx(projectRoot, coreRoot, diagOpts);
+          const status = report.health === 'healthy' ? 200 : report.health === 'degraded' ? 200 : 503;
+          server.httpServer.sendJson(res, status, {
+            health: report.health,
+            readiness: report.readiness.verdict,
+            checks: report.counts,
+            timestamp: report.timestamp,
+          });
+        } catch (err) {
+          server.httpServer.sendJson(res, 500, {
+            health: 'unhealthy',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+
       this._running = true;
 
       const totalMs = Date.now() - totalStart;
@@ -313,6 +385,108 @@ export class Kernel {
   }
 
   /**
+   * Checkpoint the current turn — advances continuity chain if state changed.
+   * This is the real runtime wiring that connects turn completion to
+   * identity continuity. Called after each turn and on shutdown.
+   *
+   * Renamed from `finalizeSession` in Round 15.0.2 to reflect true semantics:
+   * this fires per-turn, not per-session.
+   *
+   * @returns true if continuity was advanced, false if skipped
+   */
+  checkpointTurn(sessionId?: string): boolean {
+    if (!this.services) return false;
+
+    const { continuity, soul, memory, logger } = this.services;
+    const effectiveSessionId = sessionId ?? this._lastSessionId ?? 'unknown';
+
+    // Goal D (Round 15.0.2): use owner-scoped episode count for self-continuity
+    const episodeCount = this._ownerId
+      ? memory.getEpisodeCountForOwner(this._ownerId)
+      : memory.getEpisodeCount();
+
+    if (!continuity.hydrated) {
+      logger.warn('checkpointTurn: continuity not hydrated, skipping');
+      return false;
+    }
+
+    // Goal B (Round 15.0.2): run consolidation before continuity advance
+    if (this._consolidation) {
+      try {
+        this._consolidation.consolidateSession(effectiveSessionId, this._ownerId ?? undefined);
+      } catch (err) {
+        logger.warn('checkpointTurn: consolidation failed (non-fatal)', { error: String(err) });
+      }
+    }
+
+    if (!continuity.shouldAdvanceForSession({
+      sessionCount: this._sessionCount,
+      memoryEpisodeCount: episodeCount,
+    })) {
+      logger.debug('checkpointTurn: no state change, skipping advance');
+      return false;
+    }
+
+    continuity.advanceForSession({
+      soulContent: soul.current.raw,
+      sessionId: effectiveSessionId,
+      sessionCount: this._sessionCount,
+      memoryEpisodeCount: episodeCount,
+    });
+
+    logger.info('Turn checkpointed — continuity advanced', {
+      sessionId: effectiveSessionId,
+      sessionCount: this._sessionCount,
+    });
+    return true;
+  }
+
+  /**
+   * Register a new session start.
+   * Increments the session counter and records the session ID.
+   */
+  startSession(sessionId: string): void {
+    this._sessionCount++;
+    this._lastSessionId = sessionId;
+    this.services?.logger.info('Session started', {
+      sessionId,
+      sessionCount: this._sessionCount,
+    });
+  }
+
+  /**
+   * Build DiagnosticsOptions with the canonical live self-state.
+   * This is the formal contract: production callers of runDiagnostics()
+   * use this method to obtain the runtime's current self belief,
+   * making the Doctor a verification view of the runtime, not a
+   * parallel truth implementation.
+   *
+   * Online mode: continuity hydrated → live selfState included
+   * Cold/offline mode: continuity not hydrated → selfState omitted (DB-only)
+   */
+  getDiagnosticsOptions(): {
+    db: any;
+    soulContent: string;
+    selfState?: import('../identity/continuity-service.js').SelfState;
+  } | null {
+    if (!this.services) return null;
+    const { db, soul, continuity } = this.services;
+    const result: {
+      db: any;
+      soulContent: string;
+      selfState?: import('../identity/continuity-service.js').SelfState;
+    } = {
+      db,
+      soulContent: soul.current.raw,
+    };
+    // Only include live selfState when continuity is hydrated (online mode)
+    if (continuity.hydrated) {
+      result.selfState = continuity.getCurrentState() ?? undefined;
+    }
+    return result;
+  }
+
+  /**
    * 优雅关闭
    */
   async shutdown(): Promise<void> {
@@ -320,6 +494,9 @@ export class Kernel {
 
     const { logger, heartbeat, httpServer, stateMachine } = this.services;
     logger.info('🐢 Shutting down…');
+
+    // Checkpoint current turn before stopping services
+    this.checkpointTurn();
 
     heartbeat.stop();
     await httpServer.stop();
