@@ -207,3 +207,69 @@ export function buildOwnership(
     selfDefining: isSelfDefining(cls),
   };
 }
+
+// ── Identity-Memory Policy (Round 17.4) ──────────────────────────────
+
+/**
+ * Policy governing memory continuity during identity lifecycle events.
+ */
+export interface IdentityMemoryPolicy {
+  /** Whether SELF memories carry over during identity rotation */
+  carryOverSelfOnRotation: boolean;
+  /** Whether LINEAGE memories carry over during identity rotation */
+  carryOverLineageOnRotation: boolean;
+  /** Whether to reclassify memories when identity is revoked */
+  reclassifyOnRevocation: boolean;
+  /** Max epochs of memory visible to current identity (0 = current only) */
+  visibleEpochs: number;
+}
+
+/** Default identity-memory policy */
+export const DEFAULT_IDENTITY_MEMORY_POLICY: IdentityMemoryPolicy = {
+  carryOverSelfOnRotation: true,
+  carryOverLineageOnRotation: true,
+  reclassifyOnRevocation: false,
+  visibleEpochs: 0, // Current epoch only
+};
+
+/**
+ * Resolve memory ownership after identity rotation.
+ * SELF and LINEAGE memories are carried over to the new identity
+ * if policy permits; other memories remain with original owner.
+ */
+export function resolveOwnershipAfterRotation(
+  ownership: MemoryOwnership,
+  newIdentityId: string,
+  policy: IdentityMemoryPolicy = DEFAULT_IDENTITY_MEMORY_POLICY,
+): MemoryOwnership {
+  // SELF memories carry over
+  if (ownership.class === MemoryClass.SELF && policy.carryOverSelfOnRotation) {
+    return { ...ownership, identityId: newIdentityId };
+  }
+  // LINEAGE memories carry over
+  if (ownership.class === MemoryClass.LINEAGE && policy.carryOverLineageOnRotation) {
+    return { ...ownership, identityId: newIdentityId };
+  }
+  // All other memories remain with original owner
+  return ownership;
+}
+
+/**
+ * Filter memories by identity epoch(s).
+ * If visibleEpochs = 0, only memories belonging to currentIdentityId.
+ * If visibleEpochs > 0, memories belonging to ancestors up to N epochs back.
+ */
+export function filterByIdentityEpoch(
+  memories: readonly MemoryOwnership[],
+  currentIdentityId: string,
+  ancestorIdentityIds: readonly string[] = [],
+  visibleEpochs: number = 0,
+): readonly MemoryOwnership[] {
+  const allowedIds = new Set<string>([currentIdentityId]);
+  // Include ancestors up to visibleEpochs
+  for (let i = 0; i < Math.min(visibleEpochs, ancestorIdentityIds.length); i++) {
+    allowedIds.add(ancestorIdentityIds[i]!);
+  }
+  return memories.filter(m => allowedIds.has(m.identityId));
+}
+

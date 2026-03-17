@@ -75,6 +75,58 @@ export interface ApiServices {
     stats: () => { totalRevenueCents: number; eventCount: number; byProtocol: Record<string, number> };
     recentReceipts?: () => Array<{ surfaceId: string; amountCents: number; createdAt: string }>;
   };
+  // ── Round 17.0 / 17.1: Governance control surface ───────────────────
+  governanceService?: {
+    allVerdicts(): ReadonlyArray<{ id: string; proposalId: string; code: string; reason: string; riskLevel: string; timestamp: string }>;
+    getVerdict(proposalId: string): { id: string; code: string; reason: string; constraints: readonly unknown[]; survivalContext: unknown } | undefined;
+    diagnostics(): { totalProposals: number; totalReceipts: number; approvalRate: number; denialRate: number; escalationRate: number };
+    listProposals(filter?: unknown): Array<{ id: string; actionKind: string; status: string; target: string; createdAt: string }>;
+    /** Round 17.1: Trace chain */
+    getTraceChain(proposalId: string): { proposalId: string; actionKind: string; status: string; verdictId?: string; verdictCode?: string; receipts: Array<{ id: string; phase: string; result: string }>; timestamp: string } | undefined;
+  };
+  lineageService?: {
+    getAllRecords(): ReadonlyArray<{ id: string; parentId: string; childId: string; status: string; createdAt: string }>;
+    getStats(): { totalChildren: number; activeChildren: number; quarantinedChildren?: number; compromisedChildren?: number };
+  };
+  branchControl?: {
+    getBranchStatus(recordId: string): { recordId: string; status: string; descendantCount: number; quarantinedDescendants: number; compromisedDescendants: number } | undefined;
+    getCompromisedBranches(): ReadonlyArray<{ id: string; status: string }>;
+  };
+  /** Round 17.2: Delegation governance control surface */
+  delegationEnforcer?: {
+    getSummary(): { activeDelegations: number; totalViolations: number; totalEvents: number; violationsByKind: Record<string, number>; delegationsByPeer: Record<string, string> };
+    getViolations(peerId?: string): ReadonlyArray<{ id: string; peerId: string; delegationId: string; violationKind: string; attemptedAction: string; scopeLimit: string; timestamp: string }>;
+  };
+  /** Round 17.3: Autonomous operation control surface */
+  schedulerService?: {
+    stats(): { total: number; pending: number; dispatched: number; completed: number; failed: number; skipped: number; tickCount: number };
+    pendingTasks(): Array<{ id: string; commitmentId: string; taskType: string; dueAt: string; status: string }>;
+    overdueTasks(now?: string): Array<{ id: string; commitmentId: string; taskType: string; dueAt: string; status: string }>;
+  };
+  checkpointManager?: {
+    loadLatestCheckpoint(): { timestamp: string; sequenceNumber: number; activeCommitmentIds: string[]; unfulfilledPaidIds: string[] } | null;
+    count: number;
+  };
+  revenueSeekingEngine?: {
+    getPrioritized(): Array<{ id: string; surfaceId: string; description: string; estimatedRevenueCents: number; status: string }>;
+    all(): Array<{ id: string; surfaceId: string; description: string; estimatedRevenueCents: number; status: string }>;
+  };
+  /** Round 17.4: Sovereign Identity control surface */
+  identityService?: {
+    status(): string;
+    selfFingerprint(): string;
+    getIdentityHistory(): ReadonlyArray<{ id: string; version: number; status: string; createdAt: string }>;
+    getActiveRecord(): { id: string; version: number; name: string; status: string } | null;
+    serialize(): { records: unknown; status: string };
+  };
+  /** Round 17.4: Claims Registry control surface */
+  claimRegistry?: {
+    getActiveClaims(): ReadonlyArray<{ claimId: string; claimType: string; subject: string; scope: string }>;
+    getByType(type: string): ReadonlyArray<{ claimId: string; subject: string }>;
+  };
+  profitabilityEvaluator?: {
+    evaluate(commitment: unknown, projection: unknown): { verdict: string; reason: string; commitmentId: string };
+  };
 }
 
 /**
@@ -263,6 +315,163 @@ export function createApiRoutes(services: ApiServices): ApiHandler[] {
       }
       const proj = svc.getProjection();
       return agenda.explainFactors(proj);
+    },
+  });
+
+  // ── Round 17.0: Governance Decisions ────────────────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/governance/decisions',
+    handler: async () => {
+      const gov = services.governanceService;
+      if (!gov) return { error: 'GovernanceService not configured' };
+      const verdicts = gov.allVerdicts();
+      const diag = gov.diagnostics();
+      return {
+        recentVerdicts: verdicts.slice(-20),
+        totalVerdicts: verdicts.length,
+        diagnostics: diag,
+      };
+    },
+  });
+
+  // ── Round 17.0: Lineage Graph ──────────────────────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/governance/lineage',
+    handler: async () => {
+      const lin = services.lineageService;
+      const bc = services.branchControl;
+      if (!lin) return { error: 'LineageService not configured' };
+      const records = lin.getAllRecords();
+      const stats = lin.getStats();
+      const compromised = bc?.getCompromisedBranches() ?? [];
+      return {
+        records: records.slice(-50),
+        totalRecords: records.length,
+        stats,
+        compromisedBranches: compromised,
+      };
+    },
+  });
+
+  // ── Round 17.0: Branch Status ──────────────────────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/governance/branch/:id',
+    handler: async (body?: unknown) => {
+      const bc = services.branchControl;
+      if (!bc) return { error: 'BranchControl not configured' };
+      const id = (body as Record<string, string>)?.id ?? '';
+      if (!id) return { error: 'Branch ID required' };
+      const status = bc.getBranchStatus(id);
+      if (!status) return { error: `Branch not found: ${id}` };
+      return status;
+    },
+  });
+
+  // ── Round 17.1: Governance Trace ────────────────────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/governance/trace/:proposalId',
+    handler: async (body?: unknown) => {
+      const gov = services.governanceService;
+      if (!gov) return { error: 'GovernanceService not configured' };
+      const proposalId = (body as Record<string, string>)?.proposalId ?? '';
+      if (!proposalId) return { error: 'proposalId required' };
+      const trace = gov.getTraceChain(proposalId);
+      if (!trace) return { error: `Proposal not found: ${proposalId}` };
+      return trace;
+    },
+  });
+
+  // ── Round 17.2: Delegation Governance Summary ───────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/governance/delegations/summary',
+    handler: async () => {
+      const del = services.delegationEnforcer;
+      if (!del) return { error: 'DelegationEnforcer not configured' };
+      return del.getSummary();
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/governance/delegations/violations',
+    handler: async () => {
+      const del = services.delegationEnforcer;
+      if (!del) return { error: 'DelegationEnforcer not configured' };
+      return { violations: del.getViolations() };
+    },
+  });
+
+  // ── Round 17.3: Autonomous Operation Control Surface ─────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/autonomous/status',
+    handler: async () => {
+      const eco = services.economicStateService;
+      const sched = services.schedulerService;
+      const ckpt = services.checkpointManager;
+      const rev = services.revenueSeekingEngine;
+
+      return {
+        economic: eco ? eco.snapshot() : null,
+        scheduler: sched ? sched.stats() : null,
+        checkpoint: ckpt ? { latest: ckpt.loadLatestCheckpoint(), count: ckpt.count } : null,
+        revenueOpportunities: rev ? rev.getPrioritized().length : 0,
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/autonomous/scheduler',
+    handler: async () => {
+      const sched = services.schedulerService;
+      if (!sched) return { error: 'SchedulerService not configured' };
+      return {
+        stats: sched.stats(),
+        pending: sched.pendingTasks(),
+        overdue: sched.overdueTasks(),
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/autonomous/revenue-opportunities',
+    handler: async () => {
+      const rev = services.revenueSeekingEngine;
+      if (!rev) return { error: 'RevenueSeekingEngine not configured' };
+      return {
+        prioritized: rev.getPrioritized(),
+        all: rev.all(),
+      };
+    },
+  });
+
+  // ── Round 17.4: Sovereign Identity Control Surface ────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/identity/sovereign',
+    handler: async () => {
+      const idSvc = services.identityService;
+      const claims = services.claimRegistry;
+      if (!idSvc) return { error: 'IdentityService not configured' };
+      return {
+        status: idSvc.status(),
+        fingerprint: idSvc.selfFingerprint(),
+        activeRecord: idSvc.getActiveRecord(),
+        history: idSvc.getIdentityHistory(),
+        claims: claims ? {
+          active: claims.getActiveClaims(),
+          capabilities: claims.getByType('capability'),
+          services: claims.getByType('service'),
+        } : null,
+        snapshot: idSvc.serialize(),
+      };
     },
   });
 

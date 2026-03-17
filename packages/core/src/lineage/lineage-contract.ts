@@ -1,11 +1,13 @@
 /**
- * Lineage Contract — Round 16.5
+ * Lineage Contract — Round 16.5 → 17.0
  *
  * Canonical type definitions for the replication/lineage domain.
  * LineageService is the canonical owner; MultiAgentManager is the runtime executor.
  *
  * Lifecycle: planned → creating → active → degraded → recalled/terminated/orphaned/failed
+ * Round 17.0: + quarantined, compromised statuses + InheritanceScope
  */
+import type { InheritanceScope } from './inheritance-scope.js';
 
 // ── Child Runtime Status ─────────────────────────────────────────────
 
@@ -14,6 +16,8 @@ export type ChildRuntimeStatus =
   | 'creating'       // actualization in progress
   | 'active'         // running normally
   | 'degraded'       // running but unhealthy
+  | 'quarantined'    // Round 17.0: suspended pending review
+  | 'compromised'    // Round 17.0: branch flagged as tainted
   | 'recalled'       // parent requested return
   | 'terminated'     // explicitly ended
   | 'orphaned'       // parent can no longer manage
@@ -21,14 +25,16 @@ export type ChildRuntimeStatus =
 
 /** Valid status transitions */
 export const CHILD_STATUS_TRANSITIONS: Record<ChildRuntimeStatus, readonly ChildRuntimeStatus[]> = {
-  planned:    ['creating', 'failed'],
-  creating:   ['active', 'failed'],
-  active:     ['degraded', 'recalled', 'terminated', 'orphaned'],
-  degraded:   ['active', 'recalled', 'terminated', 'orphaned', 'failed'],
-  recalled:   [],  // terminal
-  terminated: [],  // terminal
-  orphaned:   ['terminated'],  // can still be force-terminated
-  failed:     [],  // terminal
+  planned:      ['creating', 'failed'],
+  creating:     ['active', 'failed'],
+  active:       ['degraded', 'quarantined', 'compromised', 'recalled', 'terminated', 'orphaned'],
+  degraded:     ['active', 'quarantined', 'compromised', 'recalled', 'terminated', 'orphaned', 'failed'],
+  quarantined:  ['active', 'compromised', 'terminated'],  // can restore or escalate
+  compromised:  ['terminated'],  // can only be terminated
+  recalled:     [],  // terminal
+  terminated:   [],  // terminal
+  orphaned:     ['terminated'],  // can still be force-terminated
+  failed:       [],  // terminal
 };
 
 export const TERMINAL_CHILD_STATUSES: readonly ChildRuntimeStatus[] = [
@@ -124,11 +130,17 @@ export interface LineageRecord {
   fundingLease: FundingLease;
   /** Child's identity summary */
   identitySummary: ChildIdentitySummary;
+  /** Round 17.0: Structured inheritance scope */
+  inheritanceScope: InheritanceScope;
   /** Governance proposal ID */
   proposalId: string;
+  /** Governance verdict ID (Round 17.0) */
+  verdictId?: string;
   /** Timestamps */
   createdAt: string;
   activatedAt?: string;
+  quarantinedAt?: string;
+  compromisedAt?: string;
   recalledAt?: string;
   terminatedAt?: string;
   orphanedAt?: string;

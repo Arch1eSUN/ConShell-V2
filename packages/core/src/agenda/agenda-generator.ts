@@ -8,6 +8,11 @@
  * - modeBonus (RuntimeMode-specific bias)
  * - survivalPressure (Round 16.9: projection-based deep coupling)
  *
+ * Round 17.3: Agenda V2 — becomes survival-driven behavior orchestrator.
+ * - Integrates ProfitabilityEvaluator as pre-filter
+ * - Extended input: creator directives, paid work, revenue opportunities
+ * - Extended output: task category, expected value/cost per item
+ *
  * Outputs include selection reasons and deferral explanations.
  */
 import type { Commitment, CommitmentPriority } from './commitment-model.js';
@@ -15,21 +20,35 @@ import { PRIORITY_WEIGHTS } from './commitment-model.js';
 import type { EconomicMemoryStore } from '../economic/economic-memory-store.js';
 import type { EconomicProjection } from '../economic/economic-state-service.js';
 import type { AgendaFactorSummary } from '../economic/control-surface-contracts.js';
+import { ProfitabilityEvaluator, type ProfitabilityResult } from '../economic/profitability-evaluator.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
 export type RuntimeMode = 'normal' | 'revenue-seeking' | 'survival-recovery' | 'shutdown';
 export type SurvivalTier = 'thriving' | 'normal' | 'frugal' | 'critical' | 'terminal' | 'dead';
 
+/** Round 17.3: Task category for structured agenda output */
+export type AgendaTaskCategory = 'revenue-seeking' | 'maintenance' | 'governance' | 'recovery' | 'user-facing' | 'general';
+
 export interface AgendaItem {
   commitment: Commitment;
   score: number;
   reasons: string[];
+  /** Round 17.3: What category of work this task represents */
+  taskCategory: AgendaTaskCategory;
+  /** Round 17.3: Expected value in cents */
+  expectedValueCents: number;
+  /** Round 17.3: Expected cost in cents */
+  expectedCostCents: number;
 }
 
 export interface DeferredItem {
   commitment: Commitment;
   reason: string;
+  /** Round 17.3: Whether deferred by profitability gate */
+  profitabilityDeferred?: boolean;
+  /** Round 17.3: Whether rejected by profitability gate */
+  profitabilityRejected?: boolean;
 }
 
 export interface AgendaResult {
@@ -38,6 +57,8 @@ export interface AgendaResult {
   generatedAt: string;
   mode: RuntimeMode;
   tier: SurvivalTier;
+  /** Round 17.3: Profitability gate results for all evaluated commitments */
+  profitabilityGateResults?: ProfitabilityResult[];
 }
 
 export interface AgendaInput {
@@ -47,6 +68,16 @@ export interface AgendaInput {
   maxItems?: number;
   /** Round 16.9: Deep coupling — canonical economic projection */
   projection?: EconomicProjection;
+  /** Round 17.3: Creator directives (high-priority instructions) */
+  creatorDirectives?: string[];
+  /** Round 17.3: Pending paid work commitment IDs */
+  pendingPaidWork?: string[];
+  /** Round 17.3: Revenue opportunity descriptions */
+  revenueOpportunities?: Array<{ id: string; estimatedRevenueCents: number; description: string }>;
+  /** Round 17.3: Active delegated/child commitment IDs */
+  activeDelegations?: string[];
+  /** Round 17.3: Governance constraint strings */
+  governanceConstraints?: string[];
 }
 
 // ── Weight profiles per mode ──────────────────────────────────────────
@@ -71,9 +102,11 @@ const WEIGHT_PROFILES: Record<RuntimeMode, WeightProfile> = {
 
 export class AgendaGenerator {
   private memoryStore?: EconomicMemoryStore;
+  private profitabilityEvaluator: ProfitabilityEvaluator;
 
-  constructor(memoryStore?: EconomicMemoryStore) {
+  constructor(memoryStore?: EconomicMemoryStore, profitabilityEvaluator?: ProfitabilityEvaluator) {
     this.memoryStore = memoryStore;
+    this.profitabilityEvaluator = profitabilityEvaluator ?? new ProfitabilityEvaluator();
   }
 
   setMemoryStore(store: EconomicMemoryStore): void {
@@ -98,12 +131,59 @@ export class AgendaGenerator {
       };
     }
 
+    // ── Round 17.3: Profitability gate (pre-filter) ──
+    let admittedCommitments = [...commitments];
+    let profitabilityGateResults: ProfitabilityResult[] | undefined;
+    const deferred: DeferredItem[] = [];
+
+    if (input.projection) {
+      const { admitted, deferred: profDeferred, rejected } =
+        this.profitabilityEvaluator.evaluateBatch(commitments, input.projection);
+
+      profitabilityGateResults = [...admitted, ...profDeferred, ...rejected];
+      const admittedIds = new Set(admitted.map(r => r.commitmentId));
+      admittedCommitments = commitments.filter(c => admittedIds.has(c.id));
+
+      // Deferred by profitability
+      for (const r of profDeferred) {
+        const c = commitments.find(x => x.id === r.commitmentId);
+        if (c) {
+          deferred.push({ commitment: c, reason: r.reason, profitabilityDeferred: true });
+        }
+      }
+      // Rejected by profitability
+      for (const r of rejected) {
+        const c = commitments.find(x => x.id === r.commitmentId);
+        if (c) {
+          deferred.push({ commitment: c, reason: r.reason, profitabilityRejected: true });
+        }
+      }
+    }
+
     const weights = WEIGHT_PROFILES[mode];
     const scored: AgendaItem[] = [];
 
-    for (const commitment of commitments) {
+    for (const commitment of admittedCommitments) {
       const { score, reasons } = this.scoreCommitment(commitment, weights, mode, tier, input.projection);
-      scored.push({ commitment, score, reasons });
+      scored.push({
+        commitment,
+        score,
+        reasons,
+        taskCategory: this.classifyTaskCategory(commitment, mode),
+        expectedValueCents: commitment.expectedValueCents,
+        expectedCostCents: commitment.estimatedCostCents,
+      });
+    }
+
+    // ── Round 17.3: Boost pending paid work ──
+    if (input.pendingPaidWork && input.pendingPaidWork.length > 0) {
+      const paidSet = new Set(input.pendingPaidWork);
+      for (const item of scored) {
+        if (paidSet.has(item.commitment.id)) {
+          item.score += 15;
+          item.reasons.push('Pending paid work boost (+15)');
+        }
+      }
     }
 
     // Sort by score descending
@@ -111,10 +191,8 @@ export class AgendaGenerator {
 
     // Ensure at least one mustPreserve slot if any exist
     const mustPreserveItems = scored.filter(s => s.commitment.mustPreserve);
-    const nonPreserveItems = scored.filter(s => !s.commitment.mustPreserve);
 
     let selected: AgendaItem[] = [];
-    const deferred: DeferredItem[] = [];
 
     if (mustPreserveItems.length > 0 && maxItems > 0) {
       // Reserve 1 slot for mustPreserve (the highest-scoring one)
@@ -157,7 +235,19 @@ export class AgendaGenerator {
       generatedAt: now,
       mode,
       tier,
+      profitabilityGateResults,
     };
+  }
+
+  // ── Round 17.3: Task Category Classification ──────────────────────
+
+  private classifyTaskCategory(c: Commitment, mode: RuntimeMode): AgendaTaskCategory {
+    if (c.kind === 'revenue' || c.revenueBearing) return 'revenue-seeking';
+    if (c.kind === 'maintenance') return 'maintenance';
+    if (c.kind === 'governance') return 'governance';
+    if (c.kind === 'user-facing') return 'user-facing';
+    if (mode === 'survival-recovery') return 'recovery';
+    return 'general';
   }
 
   // ── Scoring ─────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 /**
- * Governance Workflow — Round 16.3 Tests
+ * Governance Workflow — Round 16.3 Tests (migrated to verdict semantics in 17.1)
  *
  * Coverage:
  *   1. Contract types & status transitions
@@ -29,9 +29,9 @@ function createMockIdentity(status: string = 'active') {
   };
 }
 
-function createMockPolicy(decision: string = 'allow', rule: string = 'default-allow') {
+function createMockPolicy(decision: 'allow' | 'deny' | 'escalate' = 'allow', rule: string = 'default-allow') {
   return {
-    evaluate: () => ({ decision, rule, reason: 'mock', category: 'security' }),
+    evaluate: () => ({ decision, rule, reason: 'mock', category: 'security' } as const),
   };
 }
 
@@ -156,8 +156,8 @@ describe('GovernanceService Core (Round 16.3)', () => {
 
   it('evaluate() auto-approves when all checks pass', () => {
     const p = svc.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test' });
-    const decision = svc.evaluate(p.id);
-    expect(decision).toBe('auto_approved');
+    const verdict = svc.evaluate(p.id);
+    expect(verdict.code).toBe('allow');
     expect(svc.getProposal(p.id)?.status).toBe('approved');
   });
 
@@ -363,8 +363,8 @@ describe('Replication Governance (Round 16.3)', () => {
       justification: 'Need more compute',
       expectedCostCents: 500,
     });
-    const decision = svc.evaluate(p.id);
-    expect(decision).toBe('denied');
+    const verdict = svc.evaluate(p.id);
+    expect(verdict.code).toBe('deny');
     expect(svc.getProposal(p.id)?.denialLayer).toBe('economy');
   });
 
@@ -375,8 +375,8 @@ describe('Replication Governance (Round 16.3)', () => {
       target: 'child',
       justification: 'test',
     });
-    const decision = svc.evaluate(p.id);
-    expect(decision).toBe('denied');
+    const verdict = svc.evaluate(p.id);
+    expect(verdict.code).toBe('deny');
     expect(svc.getProposal(p.id)?.denialLayer).toBe('identity');
   });
 
@@ -404,28 +404,28 @@ describe('Identity-Action Unification (Round 16.3)', () => {
     expect(p.initiator.origin).toBe('self');
   });
 
-  it('revoked identity denies all governance actions', () => {
+  it('revoked identity marks proposal as proposal_invalid (Round 17.5)', () => {
     const svc = createService({ identity: createMockIdentity('revoked') });
     const p = svc.propose({ actionKind: 'selfmod', target: 'x', justification: 'test' });
-    const decision = svc.evaluate(p.id);
-    expect(decision).toBe('denied');
-    expect(svc.getProposal(p.id)?.denialLayer).toBe('identity');
-    expect(svc.getProposal(p.id)?.denialReason).toContain('revoked');
+    // Round 17.5: proposal_invalid at initiation, not deny at evaluation
+    expect(p.status).toBe('proposal_invalid');
+    expect(p.denialLayer).toBe('identity');
+    expect(p.denialReason).toContain('revoked');
   });
 
   it('degraded identity allows low-risk actions', () => {
     const svc = createService({ identity: createMockIdentity('degraded') });
     const p = svc.propose({ actionKind: 'fund_child', target: 'child', justification: 'funding', expectedCostCents: 100 });
-    const decision = svc.evaluate(p.id);
+    const verdict = svc.evaluate(p.id);
     // fund_child is medium risk → degraded identity allows medium risk
-    expect(decision).not.toBe('denied');
+    expect(verdict.code).not.toBe('deny');
   });
 
   it('degraded identity denies critical-risk actions', () => {
     const svc = createService({ identity: createMockIdentity('degraded') });
     const p = svc.propose({ actionKind: 'identity_rotation', target: 'self', justification: 'rotate' });
-    const decision = svc.evaluate(p.id);
-    expect(decision).toBe('denied');
+    const verdict = svc.evaluate(p.id);
+    expect(verdict.code).toBe('deny');
     expect(svc.getProposal(p.id)?.denialLayer).toBe('identity');
   });
 });
@@ -461,13 +461,15 @@ describe('Governance Receipts (Round 16.3)', () => {
     expect(phases).toContain('rollback');
   });
 
-  it('denied proposal generates failure receipt with denial layer', () => {
+  it('proposal_invalid generates initiation receipt (Round 17.5)', () => {
     const svc = createService({ identity: createMockIdentity('revoked') });
     const p = svc.propose({ actionKind: 'selfmod', target: 'x', justification: 'test' });
-    svc.evaluate(p.id);
+    // Round 17.5: initiation receipt, not decision receipt
     const receipts = svc.getReceipts(p.id);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.phase).toBe('initiation');
     expect(receipts[0]!.result).toBe('failure');
-    expect(receipts[0]!.reason).toContain('identity');
+    expect(receipts[0]!.reason).toContain('revoked');
   });
 
   it('allReceipts() returns all receipts across proposals', () => {
@@ -513,8 +515,8 @@ describe('Governance Edge Cases (Round 16.3)', () => {
   it('policy deny propagates to governance denial', () => {
     const svc = createService({ policy: createMockPolicy('deny', 'test-deny-rule') });
     const p = svc.propose({ actionKind: 'selfmod', target: 'x', justification: 'x' });
-    const decision = svc.evaluate(p.id);
-    expect(decision).toBe('denied');
+    const verdict = svc.evaluate(p.id);
+    expect(verdict.code).toBe('deny');
     expect(svc.getProposal(p.id)?.denialLayer).toBe('policy');
     expect(svc.getProposal(p.id)?.denialReason).toContain('test-deny-rule');
   });
@@ -522,8 +524,8 @@ describe('Governance Edge Cases (Round 16.3)', () => {
   it('policy escalate propagates to governance escalation', () => {
     const svc = createService({ policy: createMockPolicy('escalate', 'needs-human') });
     const p = svc.propose({ actionKind: 'fund_child', target: 'child', justification: 'x', expectedCostCents: 100 });
-    const decision = svc.evaluate(p.id);
-    expect(decision).toBe('escalated');
+    const verdict = svc.evaluate(p.id);
+    expect(verdict.code).toBe('require_review');
     expect(svc.getProposal(p.id)?.status).toBe('escalated');
   });
 
@@ -531,8 +533,8 @@ describe('Governance Edge Cases (Round 16.3)', () => {
     const svc = createService({ policy: createMockPolicy('escalate', 'needs-human') });
     const p = svc.propose({ actionKind: 'fund_child', target: 'child', justification: 'x', expectedCostCents: 100 });
     svc.evaluate(p.id);
-    const decision = svc.forceApprove(p.id);
-    expect(decision).toBe('auto_approved');
+    const verdict = svc.forceApprove(p.id);
+    expect(verdict.code).toBe('allow');
     expect(svc.getProposal(p.id)?.status).toBe('approved');
   });
 
@@ -540,17 +542,17 @@ describe('Governance Edge Cases (Round 16.3)', () => {
     const svc = createService({ policy: createMockPolicy('escalate', 'needs-human') });
     const p = svc.propose({ actionKind: 'fund_child', target: 'child', justification: 'x', expectedCostCents: 100 });
     svc.evaluate(p.id);
-    const decision = svc.forceDeny(p.id, 'Not approved by creator');
-    expect(decision).toBe('denied');
+    const verdict = svc.forceDeny(p.id, 'Not approved by creator');
+    expect(verdict.code).toBe('deny');
     expect(svc.getProposal(p.id)?.status).toBe('denied');
   });
 
   it('irreversible critical action escalates even with auto-approve policy', () => {
     const svc = createService();
     const p = svc.propose({ actionKind: 'identity_rotation', target: 'self', justification: 'Rotate credentials' });
-    const decision = svc.evaluate(p.id);
-    // identity_rotation is critical + irreversible → escalated
-    expect(decision).toBe('escalated');
+    const verdict = svc.evaluate(p.id);
+    // identity_rotation is critical + irreversible → require_review
+    expect(verdict.code).toBe('require_review');
   });
 
   it('proposalCount tracks total proposals', () => {

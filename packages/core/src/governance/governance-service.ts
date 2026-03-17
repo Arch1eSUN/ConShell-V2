@@ -1,16 +1,21 @@
 /**
- * GovernanceService — Round 16.3
+ * GovernanceService — Round 16.3 → 17.0
  *
  * Gateway-pattern canonical governance owner.
  * All high-risk actions (selfmod, replication, identity lifecycle)
  * MUST flow through this service.
  *
- * Flow: propose → evaluate → apply → verify → (rollback if failed)
+ * Flow: propose → evaluate (→ GovernanceVerdict) → apply → verify → (rollback if failed)
+ *
+ * Round 17.0:
+ *   - evaluate() returns GovernanceVerdict (not bare GovernanceDecision)
+ *   - GovernanceEconomicProvider for survival-aware Layer 3
+ *   - Verdict constraints propagate through apply (replication/selfmod/dangerous_action)
  *
  * Evaluation unifies:
  *   1. Identity status (SovereignIdentityService)
  *   2. Policy rules (PolicyEngine)
- *   3. Economic state (budget/balance)
+ *   3. Economic state + survival tier (GovernanceEconomicProvider)
  *   4. Risk level + rollback strategy
  */
 import type { Logger } from '../types/common.js';
@@ -23,13 +28,14 @@ import type { SovereignIdentityStatus } from '../identity/sovereign-identity-con
 import {
   type GovernanceActionKind,
   type GovernanceRiskLevel,
-  type GovernanceDecision,
+  type GovernanceDecision, // @deprecated Round 17.1 — consume GovernanceVerdict only
   type GovernanceDenialLayer,
   type GovernanceStatus,
   type GovernanceProposal,
   type GovernanceReceipt,
   type GovernanceReceiptPhase,
   type GovernanceActor,
+  type GovernanceTraceEntry,
   type RollbackPlan,
   type ProposalInput,
   type GovernanceDiagnostics,
@@ -38,6 +44,18 @@ import {
   isValidStatusTransition,
   TERMINAL_STATUSES,
 } from './governance-contract.js';
+import type {
+  GovernanceVerdict,
+  VerdictCode,
+  VerdictConstraint,
+  VerdictSurvivalContext,
+} from './governance-verdict.js';
+import { isExecutableVerdict } from './governance-verdict.js';
+import type { GovernanceEconomicProvider } from './governance-economic-provider.js';
+import { NullEconomicProvider } from './governance-economic-provider.js';
+import type { DelegationScope } from './delegation-scope.js';
+import { createDelegationScope } from './delegation-scope.js';
+import { DELEGATION_BLOCKED_STATUSES } from '../collective/collective-contract.js';
 
 // Re-export contract types
 export type {
@@ -54,6 +72,7 @@ export type {
   ProposalInput,
   GovernanceDiagnostics,
 };
+export type { GovernanceVerdict, VerdictCode, VerdictConstraint };
 export { ACTION_RISK_MAP, ACTION_ROLLBACK_MAP, isValidStatusTransition, TERMINAL_STATUSES };
 
 // ── Identity Provider Interface ────────────────────────────────────────
@@ -85,11 +104,13 @@ export interface GovernanceServiceOptions {
   lineage?: LineageService;
   /** Collective service (optional — peer registry, Round 16.6) */
   collective?: CollectiveService;
+  /** Round 17.0: Economic/survival provider */
+  economic?: GovernanceEconomicProvider;
   /** Logger */
   logger: Logger;
   /** Default actor origin */
   defaultOrigin?: GovernanceActor['origin'];
-  /** Economic context */
+  /** Economic context (legacy — use economic provider instead) */
   dailyBudgetCents?: number;
   dailySpentCents?: number;
 }
@@ -99,8 +120,12 @@ export interface GovernanceServiceOptions {
 export class GovernanceService {
   private proposals = new Map<string, GovernanceProposal>();
   private receipts: GovernanceReceipt[] = [];
+  private verdicts = new Map<string, GovernanceVerdict>();
+  /** Active delegation scopes by peerId (Round 17.2) */
+  private activeDelegations = new Map<string, DelegationScope>();
   private identity: GovernanceIdentityProvider;
   private policy: GovernancePolicyProvider;
+  private economic: GovernanceEconomicProvider;
   private selfmod?: SelfModManager;
   private multiagent?: MultiAgentManager;
   private lineage?: LineageService;
@@ -110,10 +135,12 @@ export class GovernanceService {
   private dailyBudgetCents: number;
   private dailySpentCents: number;
   private idCounter = 0;
+  private verdictCounter = 0;
 
   constructor(opts: GovernanceServiceOptions) {
     this.identity = opts.identity;
     this.policy = opts.policy;
+    this.economic = opts.economic ?? this.buildLegacyEconomicProvider(opts);
     this.selfmod = opts.selfmod;
     this.multiagent = opts.multiagent;
     this.lineage = opts.lineage;
@@ -159,6 +186,21 @@ export class GovernanceService {
       createdAt: new Date().toISOString(),
     };
 
+    // Round 17.5 (G1): revoked identity → proposal_invalid (not throw)
+    // Creates an auditable, observable rejection with initiation receipt
+    if (identityStatus === 'revoked') {
+      proposal.status = 'proposal_invalid';
+      proposal.denialLayer = 'identity';
+      proposal.denialReason = 'Identity is revoked — proposal initiation rejected';
+      this.proposals.set(id, proposal);
+      this.createReceipt(proposal, 'initiation', 'failure',
+        'Proposal initiation rejected: identity is revoked');
+      this.logger.warn('Proposal initiation rejected — identity revoked', {
+        id, actionKind: input.actionKind, target: input.target,
+      });
+      return proposal;
+    }
+
     this.proposals.set(id, proposal);
     this.logger.info('Governance proposal created', {
       id,
@@ -172,9 +214,12 @@ export class GovernanceService {
 
   /**
    * Step 2: Evaluate a proposal against the unified governance chain.
-   * Identity → Policy → Economy → Risk escalation.
+   * Identity → Policy → Economy/Survival → Risk escalation.
+   *
+   * Round 17.0: Returns GovernanceVerdict (rich, structured) instead of bare GovernanceDecision.
+   * Legacy decision is still set on proposal for backward compat.
    */
-  evaluate(proposalId: string): GovernanceDecision {
+  evaluate(proposalId: string): GovernanceVerdict {
     const proposal = this.proposals.get(proposalId);
     if (!proposal) throw new Error(`Proposal not found: ${proposalId}`);
     if (!isValidStatusTransition(proposal.status, 'evaluating')) {
@@ -184,13 +229,16 @@ export class GovernanceService {
     proposal.status = 'evaluating';
     proposal.evaluatedAt = new Date().toISOString();
 
+    // Capture survival context snapshot
+    const survivalContext = this.captureSurvivalContext();
+
     // ── Layer 1: Identity check ──
     const idStatus = proposal.initiator.identityStatus;
     if (idStatus === 'revoked') {
-      return this.denyProposal(proposal, 'identity', 'Identity is revoked — all governance actions denied');
+      return this.buildVerdict(proposal, 'deny', 'identity', 'Identity is revoked — all governance actions denied', survivalContext);
     }
     if (idStatus === 'degraded' && (proposal.riskLevel === 'critical' || proposal.riskLevel === 'high')) {
-      return this.denyProposal(proposal, 'identity', `Degraded identity cannot perform ${proposal.riskLevel}-risk actions`);
+      return this.buildVerdict(proposal, 'deny', 'identity', `Degraded identity cannot perform ${proposal.riskLevel}-risk actions`, survivalContext);
     }
 
     // ── Layer 2: Policy check ──
@@ -208,30 +256,130 @@ export class GovernanceService {
 
     const policyResult = this.policy.evaluate(policyCtx);
     if (policyResult.decision === 'deny') {
-      return this.denyProposal(proposal, 'policy', `Policy denied: ${policyResult.rule} — ${policyResult.reason}`);
+      return this.buildVerdict(proposal, 'deny', 'policy', `Policy denied: ${policyResult.rule} — ${policyResult.reason}`, survivalContext);
     }
 
-    // ── Layer 3: Economy check ──
+    // ── Layer 3: Economy + Survival check (Round 17.0) ──
+    const tier = this.economic.survivalTier();
+    const isEmergency = this.economic.isEmergency();
+
+    // Terminal/dead survival tier → deny all non-survival actions
+    const tierStr = tier as string;
+    if (tierStr === 'terminal' || tierStr === 'dead') {
+      return this.buildVerdict(proposal, 'deny', 'economy',
+        `Survival tier is '${tier}' — all non-survival actions denied`, survivalContext,
+        [`survival_tier_${tier}`],
+      );
+    }
+
+    // Emergency → deny all non-essential actions
+    if (isEmergency && proposal.actionKind !== 'identity_rotation') {
+      return this.buildVerdict(proposal, 'deny', 'economy',
+        'System is in emergency survival mode — only essential actions permitted', survivalContext,
+        ['emergency_mode'],
+      );
+    }
+
+    // Cost check via economic provider
     if (proposal.expectedCostCents > 0) {
-      const remaining = this.dailyBudgetCents - this.dailySpentCents;
-      if (proposal.expectedCostCents > remaining) {
-        return this.denyProposal(proposal, 'economy', `Insufficient budget: need ${proposal.expectedCostCents}¢, have ${remaining}¢`);
+      const econ = this.economic.canAcceptAction(proposal.expectedCostCents, false);
+      if (!econ.allowed) {
+        return this.buildVerdict(proposal, 'deny', 'economy', econ.reason, survivalContext,
+          ['budget_insufficient'],
+        );
       }
     }
 
+    // Must-preserve → allow_with_constraints (time-bound, resource-limited)
+    const constraints: VerdictConstraint[] = [];
+    if (this.economic.mustPreserveActive()) {
+      constraints.push({
+        kind: 'time_limit',
+        description: 'Must-preserve active — action is time-limited',
+        value: { maxDurationMs: 300_000 }, // 5 minutes
+      });
+    }
+
+    // Critical survival tier → constrain budget
+    if (tier === 'critical' || tier === 'frugal') {
+      constraints.push({
+        kind: 'budget_cap',
+        description: `Survival tier '${tier}' — budget constrained`,
+        value: { capCents: Math.min(proposal.expectedCostCents, 10_00) },
+      });
+    }
+
     // ── Layer 4: Risk escalation ──
-    // Irreversible + critical → escalate
+    // Irreversible + critical → require_review
     if (!proposal.rollbackPlan.reversible && proposal.riskLevel === 'critical') {
-      return this.escalateProposal(proposal, 'Irreversible critical action requires creator approval');
+      return this.buildVerdict(proposal, 'require_review', 'risk',
+        'Irreversible critical action requires creator approval', survivalContext,
+        ['irreversible_critical'], constraints,
+      );
     }
 
     // Policy escalation pass-through
     if (policyResult.decision === 'escalate') {
-      return this.escalateProposal(proposal, `Policy escalated: ${policyResult.rule}`);
+      return this.buildVerdict(proposal, 'require_review', 'policy',
+        `Policy escalated: ${policyResult.rule}`, survivalContext,
+        [`policy_${policyResult.rule}`], constraints,
+      );
     }
 
-    // ── All checks passed → auto-approve ──
-    return this.approveProposal(proposal);
+    // ── Layer 5: Peer eligibility check for delegation actions (Round 17.2) ──
+    const isDelegation = proposal.actionKind.startsWith('delegate_');
+    if (isDelegation) {
+      const delFields = proposal.payload?.['delegation'] as {
+        targetPeerId?: string;
+        taskDescription?: string;
+        subDelegationRequested?: boolean;
+      } | undefined;
+
+      if (!delFields?.targetPeerId) {
+        return this.buildVerdict(proposal, 'deny', 'policy',
+          'Delegation proposal missing required targetPeerId', survivalContext,
+          ['delegation_fields_missing'],
+        );
+      }
+
+      // Check peer exists and is eligible
+      if (this.collective) {
+        const peer = this.collective.getPeer(delFields.targetPeerId);
+        if (!peer) {
+          return this.buildVerdict(proposal, 'deny', 'policy',
+            `Target peer not found: ${delFields.targetPeerId}`, survivalContext,
+            ['peer_not_found'],
+          );
+        }
+        if ((DELEGATION_BLOCKED_STATUSES as readonly string[]).includes(peer.status)) {
+          return this.buildVerdict(proposal, 'deny', 'policy',
+            `Peer '${delFields.targetPeerId}' ineligible for delegation: status '${peer.status}'`, survivalContext,
+            [`peer_status_${peer.status}`],
+          );
+        }
+      }
+
+      // Sub-delegation requires explicit escalation
+      if (delFields.subDelegationRequested) {
+        constraints.push({
+          kind: 'delegation_restriction',
+          description: 'Sub-delegation requested — requires explicit review',
+          value: { subDelegationAllowed: true },
+        });
+      }
+    }
+
+    // ── All checks passed ──
+    if (constraints.length > 0) {
+      return this.buildVerdict(proposal, 'allow_with_constraints', null,
+        'Approved with survival-driven constraints', survivalContext,
+        [], constraints,
+      );
+    }
+
+    return this.buildVerdict(proposal, 'allow', null,
+      'Auto-approved by governance evaluation chain', survivalContext,
+    );
   }
 
   /**
@@ -306,6 +454,52 @@ export class GovernanceService {
           }
           break;
         }
+        case 'delegate_task':
+        case 'delegate_selfmod':
+        case 'delegate_dangerous_action': {
+          // Round 17.2: Governance-controlled delegation execution
+          const delPayload = proposal.payload?.['delegation'] as {
+            targetPeerId: string; taskDescription: string; subDelegationRequested?: boolean;
+            requestedScope?: { budgetCapCents?: number; allowSelfmod?: boolean; allowDangerousAction?: boolean; expiryMs?: number };
+          };
+          if (!delPayload?.targetPeerId) throw new Error('Delegation payload missing targetPeerId');
+
+          const verdict = this.verdicts.get(proposalId);
+          const scope = createDelegationScope({
+            delegatorId: proposal.initiator.identityId,
+            delegatedPeerId: delPayload.targetPeerId,
+            taskScope: delPayload.taskDescription || proposal.justification,
+            verdictId: verdict?.id ?? 'unknown',
+            proposalId: proposal.id,
+            subDelegationAllowed: delPayload.subDelegationRequested ?? false,
+            budgetCapCents: delPayload.requestedScope?.budgetCapCents ?? proposal.expectedCostCents,
+            allowSelfmod: proposal.actionKind === 'delegate_selfmod' ? (delPayload.requestedScope?.allowSelfmod ?? true) : false,
+            allowDangerousAction: proposal.actionKind === 'delegate_dangerous_action' ? (delPayload.requestedScope?.allowDangerousAction ?? true) : false,
+            expiryMs: delPayload.requestedScope?.expiryMs,
+          });
+
+          this.activeDelegations.set(delPayload.targetPeerId, scope);
+
+          if (this.collective) {
+            const receipt = this.collective.delegateTask(
+              delPayload.targetPeerId,
+              delPayload.taskDescription || proposal.justification,
+              undefined,
+              scope.delegationId,
+              verdict?.id,
+            );
+            relatedIds = {
+              delegatedPeerId: delPayload.targetPeerId,
+              delegationScopeId: scope.delegationId,
+            };
+          } else {
+            relatedIds = {
+              delegatedPeerId: delPayload.targetPeerId,
+              delegationScopeId: scope.delegationId,
+            };
+          }
+          break;
+        }
         case 'identity_rotation':
         case 'identity_revocation':
         case 'external_declaration':
@@ -318,7 +512,20 @@ export class GovernanceService {
       proposal.status = 'applied';
       proposal.appliedAt = new Date().toISOString();
 
+      // Round 17.1: Wire verdictId into receipt, and executionReceiptId back into verdict
+      const verdict = this.verdicts.get(proposalId);
+      if (verdict) {
+        if (!relatedIds) relatedIds = {};
+        relatedIds.verdictId = verdict.id;
+      }
       const receipt = this.createReceipt(proposal, 'apply', 'success', 'Action applied successfully', relatedIds);
+      // Post-execution linkage: wire receipt ID and lineage ID back into verdict
+      if (verdict) {
+        verdict.executionReceiptId = receipt.id;
+        if (relatedIds?.lineageRecordId) {
+          verdict.lineageRecordId = relatedIds.lineageRecordId;
+        }
+      }
       this.logger.info('Governance action applied', { proposalId, actionKind: proposal.actionKind });
       return receipt;
 
@@ -420,26 +627,32 @@ export class GovernanceService {
 
   /**
    * Force-approve an escalated proposal (e.g. by creator).
+   * Round 17.1: Returns GovernanceVerdict instead of bare GovernanceDecision.
    */
-  forceApprove(proposalId: string): GovernanceDecision {
+  forceApprove(proposalId: string): GovernanceVerdict {
     const proposal = this.proposals.get(proposalId);
     if (!proposal) throw new Error(`Proposal not found: ${proposalId}`);
     if (proposal.status !== 'escalated') {
       throw new Error(`Cannot force-approve proposal in status: ${proposal.status}`);
     }
-    return this.approveProposal(proposal);
+    const survivalContext = this.captureSurvivalContext();
+    return this.buildVerdict(proposal, 'allow', null,
+      'Force-approved by creator/admin', survivalContext);
   }
 
   /**
    * Force-deny an escalated proposal (e.g. by creator).
+   * Round 17.1: Returns GovernanceVerdict instead of bare GovernanceDecision.
    */
-  forceDeny(proposalId: string, reason: string): GovernanceDecision {
+  forceDeny(proposalId: string, reason: string): GovernanceVerdict {
     const proposal = this.proposals.get(proposalId);
     if (!proposal) throw new Error(`Proposal not found: ${proposalId}`);
     if (proposal.status !== 'escalated') {
       throw new Error(`Cannot force-deny proposal in status: ${proposal.status}`);
     }
-    return this.denyProposal(proposal, 'approval_missing', reason);
+    const survivalContext = this.captureSurvivalContext();
+    return this.buildVerdict(proposal, 'deny', 'approval_missing',
+      reason, survivalContext);
   }
 
   // ── Queries ─────────────────────────────────────────────────────────
@@ -467,6 +680,53 @@ export class GovernanceService {
     return this.proposals.size;
   }
 
+  /** Round 17.0: Retrieve a verdict by proposal ID */
+  getVerdict(proposalId: string): GovernanceVerdict | undefined {
+    return this.verdicts.get(proposalId);
+  }
+
+  /** Round 17.0: Get all verdicts */
+  allVerdicts(): readonly GovernanceVerdict[] {
+    return Array.from(this.verdicts.values());
+  }
+
+  /**
+   * Round 17.1: Get the full governance trace chain for a proposal.
+   * Assembles: proposal → verdict → receipts → lineage → branch linkage.
+   */
+  getTraceChain(proposalId: string): GovernanceTraceEntry | undefined {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) return undefined;
+
+    const verdict = this.verdicts.get(proposalId);
+    const receipts = this.receipts
+      .filter(r => r.proposalId === proposalId)
+      .map(r => ({
+        id: r.id,
+        phase: r.phase,
+        result: r.result,
+        verdictId: r.relatedIds?.verdictId,
+        lineageRecordId: r.relatedIds?.lineageRecordId,
+      }));
+
+    // Find lineage record from apply receipt
+    const applyReceipt = this.receipts.find(
+      r => r.proposalId === proposalId && r.phase === 'apply' && r.result === 'success',
+    );
+
+    return {
+      proposalId: proposal.id,
+      actionKind: proposal.actionKind,
+      status: proposal.status,
+      verdictId: verdict?.id,
+      verdictCode: verdict?.code,
+      receipts,
+      lineageRecordId: applyReceipt?.relatedIds?.lineageRecordId,
+      branchControlReceiptId: undefined, // linked externally via branch-control
+      timestamp: proposal.createdAt,
+    };
+  }
+
   // ── Diagnostics ─────────────────────────────────────────────────────
 
   /**
@@ -489,12 +749,12 @@ export class GovernanceService {
       receiptsByPhase[r.phase] = (receiptsByPhase[r.phase] ?? 0) + 1;
     }
 
-    // Decision counts
-    const decisions = proposals.filter(p => p.decision);
-    const approved = decisions.filter(p => p.decision === 'auto_approved').length;
-    const denied = decisions.filter(p => p.decision === 'denied').length;
-    const escalated = decisions.filter(p => p.decision === 'escalated').length;
-    const total = decisions.length || 1; // avoid division by zero
+    // Round 17.1: Count by verdict.code (primary) with legacy fallback
+    const verdictsList = Array.from(this.verdicts.values());
+    const approved = verdictsList.filter(v => v.code === 'allow' || v.code === 'allow_with_constraints').length;
+    const denied = verdictsList.filter(v => v.code === 'deny').length;
+    const escalated = verdictsList.filter(v => v.code === 'require_review').length;
+    const total = verdictsList.length || 1; // avoid division by zero
 
     return {
       totalProposals: proposals.length,
@@ -512,6 +772,37 @@ export class GovernanceService {
 
   // ── Private Helpers ─────────────────────────────────────────────────
 
+  /**
+   * Build a budget-aware economic provider from legacy dailyBudgetCents/dailySpentCents
+   * options, or fall back to NullEconomicProvider when neither is set.
+   */
+  private buildLegacyEconomicProvider(opts: GovernanceServiceOptions): GovernanceEconomicProvider {
+    const budget = opts.dailyBudgetCents;
+    const spent = opts.dailySpentCents;
+    if (budget === undefined && spent === undefined) {
+      return new NullEconomicProvider();
+    }
+    const b = budget ?? 100_00;
+    const s = spent ?? 0;
+    return {
+      survivalTier: () => 'normal' as any,
+      isEmergency: () => false,
+      mustPreserveActive: () => false,
+      currentBalanceCents: () => b - s,
+      canAcceptAction: (costCents: number) => {
+        const remaining = b - s;
+        if (costCents > remaining) {
+          return { allowed: false, reason: `Budget exceeded: cost ${costCents} > remaining ${remaining}` };
+        }
+        return { allowed: true, reason: 'Within budget' };
+      },
+    };
+  }
+
+  /**
+   * @deprecated Round 17.1 — Dead code. forceApprove/forceDeny now use buildVerdict().
+   * Retained for reference until 17.2 cleanup.
+   */
   private approveProposal(proposal: GovernanceProposal): GovernanceDecision {
     proposal.status = 'approved';
     proposal.decision = 'auto_approved';
@@ -521,6 +812,10 @@ export class GovernanceService {
     return 'auto_approved';
   }
 
+  /**
+   * @deprecated Round 17.1 — Dead code. Use buildVerdict() instead.
+   * Retained for reference until 17.2 cleanup.
+   */
   private denyProposal(
     proposal: GovernanceProposal,
     layer: GovernanceDenialLayer,
@@ -536,6 +831,10 @@ export class GovernanceService {
     return 'denied';
   }
 
+  /**
+   * @deprecated Round 17.1 — Dead code. Use buildVerdict() instead.
+   * Retained for reference until 17.2 cleanup.
+   */
   private escalateProposal(proposal: GovernanceProposal, reason: string): GovernanceDecision {
     proposal.status = 'escalated';
     proposal.decision = 'escalated';
@@ -577,6 +876,76 @@ export class GovernanceService {
         return ['Action is irreversible — no rollback steps available'];
       default:
         return ['Unknown rollback strategy'];
+    }
+  }
+
+  // ── Round 17.0: Verdict Builders ─────────────────────────────────────
+
+  private buildVerdict(
+    proposal: GovernanceProposal,
+    code: VerdictCode,
+    layer: GovernanceDenialLayer | null,
+    reason: string,
+    survivalContext: VerdictSurvivalContext | null,
+    triggeredPolicies: string[] = [],
+    constraints: VerdictConstraint[] = [],
+  ): GovernanceVerdict {
+    const verdictId = `vrd_${Date.now()}_${++this.verdictCounter}`;
+
+    // Map verdict code to legacy GovernanceDecision for backward compat
+    const legacyDecision: GovernanceDecision =
+      code === 'deny' ? 'denied' :
+      code === 'require_review' ? 'escalated' :
+      'auto_approved';
+
+    // Update proposal state
+    proposal.decision = legacyDecision;
+    proposal.decidedAt = new Date().toISOString();
+    if (code === 'deny') {
+      proposal.status = 'denied';
+      proposal.denialLayer = layer ?? undefined;
+      proposal.denialReason = reason;
+    } else if (code === 'require_review') {
+      proposal.status = 'escalated';
+    } else {
+      proposal.status = 'approved';
+    }
+
+    // Create receipt
+    const receiptResult = code === 'deny' ? 'failure' : 'success';
+    const receiptReason = layer ? `${code} by ${layer}: ${reason}` : `${code}: ${reason}`;
+    this.createReceipt(proposal, 'decision', receiptResult as 'success' | 'failure', receiptReason);
+
+    // Build verdict
+    const verdict: GovernanceVerdict = {
+      id: verdictId,
+      proposalId: proposal.id,
+      code,
+      reason,
+      triggeredPolicies,
+      riskLevel: proposal.riskLevel,
+      constraints,
+      childCreationPermitted: code !== 'deny' && code !== 'rollback_required',
+      rollbackEligible: proposal.rollbackPlan.reversible,
+      survivalContext,
+      timestamp: new Date().toISOString(),
+    };
+
+    this.verdicts.set(proposal.id, verdict);
+    this.logger.info(`Governance verdict: ${code}`, { proposalId: proposal.id, verdictId, code, layer });
+    return verdict;
+  }
+
+  private captureSurvivalContext(): VerdictSurvivalContext | null {
+    try {
+      return {
+        survivalTier: this.economic.survivalTier() as string,
+        isEmergency: this.economic.isEmergency(),
+        mustPreserveActive: this.economic.mustPreserveActive(),
+        balanceCents: this.economic.currentBalanceCents(),
+      };
+    } catch {
+      return null;
     }
   }
 }

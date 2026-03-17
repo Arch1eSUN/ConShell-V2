@@ -16,3 +16,8 @@
 - 本地全量测试当前并非全绿：实际结果为 61 个测试文件中 44 通过、17 失败；1028 个测试中 1026 通过、2 失败；核心阻塞是 better-sqlite3 缺失，波及 state / memory / doctor / identity continuity / webchat e2e 等。
 - 与此同时，最近轮次的局部主线测试真实很强：economic、governance、lineage、collective(16.7/16.8) 等主线均通过。
 - Round 16.8 对 collective lifecycle 做了实质修复，但这不等于全项目完成，也不等于最终生命体闭环成立。
+- Round 17.5 的核心工程目标已完成：revoked identity 现在以 `proposal_invalid + initiation failure receipt` 语义落地，而非 throw。
+- governance contract 已正式区分 initiation invalidity、evaluated denial、execution failure。
+- claims lifecycle 绑定已真实成立：revoke → 全失效；rotate → capability 继承、service 失效；recover → 不恢复旧 claims。
+- `restoreRecordsHardened()` 已形成格式校验、链完整性校验、active count 校验三层硬化。
+- `/api/identity/sovereign` 目前只完成基础暴露，尚未成为 diagnosis-first truth surface；这应是 Round 17.6 的主线。

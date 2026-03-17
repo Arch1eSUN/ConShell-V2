@@ -177,6 +177,12 @@ export interface CollectiveDelegationReceipt {
   taskDescription: string;
   /** Commitment ID (if linked) */
   commitmentId?: string;
+  /** Delegation scope ID (Round 17.2 — governance-issued scope) */
+  delegationScopeId?: string;
+  /** Governance verdict ID (Round 17.2) */
+  verdictId?: string;
+  /** Governance proposal ID (Round 17.2) */
+  proposalId?: string;
   /** Result of the delegation */
   result: DelegationResult;
   /** Impact on peer trust after this delegation */

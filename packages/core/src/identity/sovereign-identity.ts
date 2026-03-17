@@ -19,8 +19,10 @@ import type { SoulData } from '../soul/system.js';
 import {
   rotateIdentity, revokeIdentity, recoverIdentity,
   createGenesisRecord, resolveActive,
-  type IdentityRecord, type IdentityStatus,
+  serializeRecords, restoreRecords,
+  type IdentityRecord, type IdentityStatus, type IdentityRecordSnapshot,
 } from './identity-lifecycle.js';
+import type { ClaimRegistry } from './identity-claims.js';
 import type {
   SovereignIdentityStatus, StableClaim, CapabilityClaim,
   OperationalClaim, IdentityClaimSet, PublicClaimSet,
@@ -62,6 +64,7 @@ export class SovereignIdentityService {
   private identityStatus: SovereignIdentityStatus = 'active';
   private identityRecords: IdentityRecord[] = [];
   private changeListeners: IdentityChangeListener[] = [];
+  private claimRegistry: ClaimRegistry | null = null;
 
   constructor(
     continuityService: ContinuityService,
@@ -280,6 +283,17 @@ export class SovereignIdentityService {
 
     this.emitChange(previousStatus, 'active', `Rotated: ${reason}`);
 
+    // Round 17.5 (G5): capability claims inherit to new identity; service claims revoked
+    if (this.claimRegistry && result.newRecord) {
+      this.claimRegistry.reassignIssuer(current.id, result.newRecord.id, 'capability');
+      // Service claims must be re-issued under the new identity
+      for (const claim of this.claimRegistry.getByIssuer(current.id)) {
+        if (claim.claimType === 'service' && !claim.revoked) {
+          this.claimRegistry.revoke(claim.claimId);
+        }
+      }
+    }
+
     return {
       success: true,
       previousStatus,
@@ -287,6 +301,13 @@ export class SovereignIdentityService {
       reason: result.reason,
       rotatedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Bind a ClaimRegistry for lifecycle claim propagation (Round 17.5 G5).
+   */
+  bindClaimRegistry(registry: ClaimRegistry): void {
+    this.claimRegistry = registry;
   }
 
   /**
@@ -316,6 +337,11 @@ export class SovereignIdentityService {
     this.invalidate();
 
     this.emitChange(previousStatus, 'revoked', `Revoked: ${reason}`);
+
+    // Round 17.5 (G5): revoke all claims issued by this identity
+    if (this.claimRegistry && current) {
+      this.claimRegistry.revokeByIssuer(current.id);
+    }
 
     return {
       success: true,
@@ -380,6 +406,60 @@ export class SovereignIdentityService {
   /** Remove a previously registered listener */
   removeIdentityChangeListener(listener: IdentityChangeListener): void {
     this.changeListeners = this.changeListeners.filter(l => l !== listener);
+  }
+
+  // ── Serialization (Round 17.4) ──────────────────────────────────────
+
+  /**
+   * Serialize identity state for checkpoint persistence.
+   * Returns a JSON-safe snapshot of all identity records + status.
+   */
+  serialize(): { records: IdentityRecordSnapshot; status: SovereignIdentityStatus } {
+    return {
+      records: serializeRecords(this.identityRecords),
+      status: this.identityStatus,
+    };
+  }
+
+  /**
+   * Restore identity state from a checkpoint snapshot.
+   * Returns true if restoration succeeded.
+   */
+  restore(snapshot: { records: unknown; status?: string }): boolean {
+    const records = restoreRecords(snapshot.records);
+    if (!records) return false;
+    this.identityRecords = records;
+    if (snapshot.status && ['active', 'degraded', 'recovering', 'rotated', 'revoked'].includes(snapshot.status)) {
+      this.identityStatus = snapshot.status as SovereignIdentityStatus;
+    }
+    this.invalidate();
+    return true;
+  }
+
+  // ── Identity History (Round 17.4) ──────────────────────────────────
+
+  /**
+   * Get the full identity history — version chain with status transitions.
+   * Sorted by version ascending.
+   */
+  getIdentityHistory(): readonly IdentityRecord[] {
+    return [...this.identityRecords].sort((a, b) => a.version - b.version);
+  }
+
+  /**
+   * Get the currently active IdentityRecord.
+   * Returns null if identity is in revoked state.
+   */
+  getActiveRecord(): IdentityRecord | null {
+    return resolveActive(this.identityRecords);
+  }
+
+  /**
+   * Get the self fingerprint for identity binding.
+   * Requires resolve() to have been called.
+   */
+  selfFingerprint(): string {
+    return this.ensureCached().selfFingerprint;
   }
 
   // ── Private ────────────────────────────────────────────────────────

@@ -9,6 +9,8 @@
 - [complete] Phase 3: 对照 Web4.ai / Conway Automaton / OpenClaw 目标能力做差距分析
 - [complete] Phase 4: 评估项目完成度与百分比
 - [in_progress] Phase 5: 输出全局审计报告
+- [complete] Round 17.5: 形成详细审计报告
+- [complete] Round 17.6: 生成并写入 DevPrompt
 
 ## 风险
 - Web4.ai 外部资料可能不完整或带宣传性，需要与仓内事实分离

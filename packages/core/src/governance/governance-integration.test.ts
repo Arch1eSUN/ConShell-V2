@@ -1,5 +1,5 @@
 /**
- * Governance Integration Tests — Round 16.4
+ * Governance Integration Tests — Round 16.4 (migrated to verdict semantics in 17.1)
  *
  * Integration tests for:
  *   - Kernel wiring (GovernanceService in KernelServices)
@@ -155,8 +155,8 @@ describe('SelfMod Integration Path', () => {
     expect(proposal.status).toBe('proposed');
     expect(proposal.riskLevel).toBe('high');
 
-    const decision = gov.evaluate(proposal.id);
-    expect(decision).toBe('auto_approved');
+    const verdict = gov.evaluate(proposal.id);
+    expect(verdict.code).toBe('allow');
 
     const receipt = await gov.apply(proposal.id);
     expect(receipt.result).toBe('success');
@@ -224,8 +224,8 @@ describe('Replication Integration Path', () => {
     expect(p.riskLevel).toBe('high');
     expect(p.rollbackPlan.strategy).toBe('terminate-child');
 
-    const decision = gov.evaluate(p.id);
-    expect(decision).toBe('auto_approved');
+    const verdict = gov.evaluate(p.id);
+    expect(verdict.code).toBe('allow');
 
     const receipt = await gov.apply(p.id);
     expect(receipt.result).toBe('success');
@@ -273,8 +273,8 @@ describe('Replication Integration Path', () => {
       justification: 'test',
       expectedCostCents: 50,
     });
-    const decision = gov2.evaluate(p.id);
-    expect(decision).toBe('denied');
+    const verdict = gov2.evaluate(p.id);
+    expect(verdict.code).toBe('deny');
     expect(gov2.getProposal(p.id)?.denialLayer).toBe('economy');
   });
 
@@ -342,11 +342,11 @@ describe('API Route Behavior (unit)', () => {
   it('force-approve escalated proposal', () => {
     const gov2 = createGovernanceService({ policy: createMockPolicy('escalate') });
     const p = gov2.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test' });
-    const decision = gov2.evaluate(p.id);
-    expect(decision).toBe('escalated');
+    const verdict = gov2.evaluate(p.id);
+    expect(verdict.code).toBe('require_review');
 
-    const approved = gov2.forceApprove(p.id);
-    expect(approved).toBe('auto_approved');
+    const approveVerdict = gov2.forceApprove(p.id);
+    expect(approveVerdict.code).toBe('allow');
     expect(gov2.getProposal(p.id)?.status).toBe('approved');
   });
 
@@ -396,22 +396,22 @@ describe('Governance Diagnostics', () => {
     expect(d.proposalsByKind['replication']).toBe(1);
   });
 
-  it('approval/denial/escalation rates are correct', () => {
+  it('proposal_invalid counted separately from denials (Round 17.5)', () => {
     const gov = createGovernanceService();
     // 1 approved
     const p1 = gov.propose({ actionKind: 'selfmod', target: 'a.ts', justification: 'test' });
     gov.evaluate(p1.id);
 
-    // 1 denied (identity revoked)
+    // 1 proposal_invalid (not denial)
     const gov2 = createGovernanceService({ identity: createMockIdentity('revoked') });
-    const p2 = gov2.propose({ actionKind: 'selfmod', target: 'b.ts', justification: 'test' });
-    gov2.evaluate(p2.id);
+    gov2.propose({ actionKind: 'selfmod', target: 'b.ts', justification: 'test' });
 
     const d1 = gov.diagnostics();
     expect(d1.approvalRate).toBe(1); // 1/1
 
     const d2 = gov2.diagnostics();
-    expect(d2.denialRate).toBe(1); // 1/1
+    // proposal_invalid is not a denial — denialRate stays 0
+    expect(d2.denialRate).toBe(0);
   });
 });
 
@@ -465,12 +465,12 @@ describe('Legacy Adapter', () => {
 // ══════════════════════════════════════════════════════════════════════
 
 describe('Identity-Governance Interaction', () => {
-  it('revoked identity denies all actions', () => {
+  it('revoked identity marks proposal as proposal_invalid (Round 17.5)', () => {
     const gov = createGovernanceService({ identity: createMockIdentity('revoked') });
     const p = gov.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test' });
-    const decision = gov.evaluate(p.id);
-    expect(decision).toBe('denied');
-    expect(gov.getProposal(p.id)?.denialLayer).toBe('identity');
+    // Round 17.5: proposal_invalid at initiation
+    expect(p.status).toBe('proposal_invalid');
+    expect(p.denialLayer).toBe('identity');
   });
 
   it('degraded identity denies critical actions', () => {
@@ -480,8 +480,8 @@ describe('Identity-Governance Interaction', () => {
       target: 'self',
       justification: 'rotate keys',
     });
-    const decision = gov.evaluate(p.id);
-    expect(decision).toBe('denied');
+    const verdict = gov.evaluate(p.id);
+    expect(verdict.code).toBe('deny');
     expect(gov.getProposal(p.id)?.denialLayer).toBe('identity');
   });
 
@@ -493,8 +493,8 @@ describe('Identity-Governance Interaction', () => {
       justification: 'fund worker',
       expectedCostCents: 100,
     });
-    const decision = gov.evaluate(p.id);
-    expect(decision).toBe('auto_approved');
+    const verdict = gov.evaluate(p.id);
+    expect(verdict.code).toBe('allow');
   });
 
   it('active identity proceeds through all layers', () => {
@@ -504,8 +504,8 @@ describe('Identity-Governance Interaction', () => {
       target: 'test.ts',
       justification: 'improve logging',
     });
-    const decision = gov.evaluate(p.id);
-    expect(decision).toBe('auto_approved');
+    const verdict = gov.evaluate(p.id);
+    expect(verdict.code).toBe('allow');
   });
 });
 
@@ -552,8 +552,8 @@ describe('Edge Cases', () => {
     const gov = createGovernanceService({ policy: createMockPolicy('escalate') });
     const p = gov.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test' });
     gov.evaluate(p.id);
-    const decision = gov.forceDeny(p.id, 'Creator rejected');
-    expect(decision).toBe('denied');
+    const verdict = gov.forceDeny(p.id, 'Creator rejected');
+    expect(verdict.code).toBe('deny');
     expect(gov.getProposal(p.id)?.denialReason).toBe('Creator rejected');
   });
 });

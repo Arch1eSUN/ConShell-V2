@@ -17,6 +17,44 @@ export type RevenueSurfaceType = 'x402_payment' | 'api_access' | 'task_service';
 
 export type PaymentProofStatus = 'pending' | 'verified' | 'rejected' | 'refunded';
 
+// ── Round 17.3: Payment Proof Verification ───────────────────────────
+
+export interface PaymentProofVerificationResult {
+  /** Whether the proof was successfully verified */
+  readonly verified: boolean;
+  /** Verification method used */
+  readonly method: 'chain_confirmation' | 'receipt_match' | 'manual' | 'test';
+  /** Reason for rejection (if not verified) */
+  readonly rejectionReason?: string;
+  /** Timestamp of verification */
+  readonly verifiedAt: string;
+}
+
+// ── Round 17.3: Fulfillment Tracking ─────────────────────────────────
+
+export type FulfillmentStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'refund_issued';
+
+export interface FulfillmentRecord {
+  /** Unique fulfillment ID */
+  readonly id: string;
+  /** Linked payment proof ID */
+  readonly proofId: string;
+  /** Current fulfillment status */
+  status: FulfillmentStatus;
+  /** Associated task/action that fulfilled the payment */
+  readonly taskId?: string;
+  /** Description of what was delivered */
+  readonly deliverable?: string;
+  /** Timestamp of fulfillment completion */
+  readonly completedAt?: string;
+  /** Reason for failure/refund */
+  readonly failureReason?: string;
+  /** ISO timestamp of creation */
+  readonly createdAt: string;
+  /** Round 17.4: Identity of the agent that fulfilled this */
+  readonly issuerIdentityId?: string;
+}
+
 // ── Revenue Settlement (Round 16.9) ──────────────────────────────────
 
 export type RevenueSettlementStatus = 'pending' | 'settled' | 'failed' | 'disputed' | 'refunded';
@@ -38,6 +76,8 @@ export interface RevenueReceipt {
   readonly settledAt?: string;
   /** ISO timestamp of creation */
   readonly createdAt: string;
+  /** Round 17.4: Identity that earned this revenue */
+  readonly issuerIdentityId?: string;
 }
 
 export type RevenueRecordedCallback = (receipt: RevenueReceipt) => void;
@@ -95,8 +135,14 @@ export interface PaymentProofContract {
   };
   /** Current status */
   status: PaymentProofStatus;
+  /** Round 17.3: Verification result (replaces hardcoded status) */
+  readonly verification?: PaymentProofVerificationResult;
+  /** Round 17.3: Linked fulfillment record */
+  fulfillmentId?: string;
   /** Timestamp of initial creation */
   readonly createdAt: string;
+  /** Round 17.4: Identity that this payment proof is attributed to */
+  readonly issuerIdentityId?: string;
 }
 
 // ── Revenue Surface ──────────────────────────────────────────────────
@@ -116,6 +162,8 @@ export interface RevenueSurface {
   totalEarnedCents: number;
   /** Number of successful transactions */
   transactionCount: number;
+  /** Round 17.4: Identity that owns this revenue surface */
+  issuerIdentityId?: string;
 }
 
 // ── Concrete Revenue Surface Implementations ─────────────────────────
@@ -186,8 +234,10 @@ export class RevenueSurfaceRegistry {
   private surfaces = new Map<string, RevenueSurface>();
   private proofs: PaymentProofContract[] = [];
   private receipts: RevenueReceipt[] = [];
+  private fulfillments = new Map<string, FulfillmentRecord>();
   private proofIdCounter = 0;
   private receiptIdCounter = 0;
+  private fulfillmentIdCounter = 0;
   private onRevenueRecordedCallbacks: RevenueRecordedCallback[] = [];
 
   /**
@@ -244,46 +294,135 @@ export class RevenueSurfaceRegistry {
 
   /**
    * Record a payment received on a surface.
-   * Creates a PaymentProofContract and updates surface totals.
+   * Round 17.3: Accepts optional verification result; unverified
+   * payments are recorded as 'pending' and do NOT count as confirmed revenue.
    */
   recordPayment(
     surfaceId: string,
     proof: PaymentProofContract['proof'],
+    verification?: PaymentProofVerificationResult,
   ): PaymentProofContract {
     const surface = this.surfaces.get(surfaceId);
     if (!surface) {
       throw new Error(`Unknown revenue surface: ${surfaceId}`);
     }
 
+    const isVerified = verification ? verification.verified : true; // backward compat
+    const status: PaymentProofStatus = isVerified ? 'verified' : (verification?.rejectionReason ? 'rejected' : 'pending');
+
     const contract: PaymentProofContract = {
       id: `proof_${++this.proofIdCounter}`,
       surfaceId,
       proof,
-      status: 'verified',
+      status,
+      verification,
       createdAt: new Date().toISOString(),
     };
 
-    surface.totalEarnedCents += proof.amount;
-    surface.transactionCount++;
     this.proofs.push(contract);
 
-    // Round 16.9: Emit RevenueReceipt for RevenueService
-    const receipt: RevenueReceipt = {
-      id: `receipt_${++this.receiptIdCounter}`,
-      surfaceId,
-      surfaceType: surface.type,
-      amountCents: proof.amount,
-      settlementStatus: 'settled',
-      proofId: contract.id,
-      settledAt: contract.createdAt,
-      createdAt: contract.createdAt,
-    };
-    this.receipts.push(receipt);
-    for (const cb of this.onRevenueRecordedCallbacks) {
-      cb(receipt);
+    // Round 17.3: ONLY verified payments count as confirmed revenue
+    if (isVerified) {
+      surface.totalEarnedCents += proof.amount;
+      surface.transactionCount++;
+
+      const receipt: RevenueReceipt = {
+        id: `receipt_${++this.receiptIdCounter}`,
+        surfaceId,
+        surfaceType: surface.type,
+        amountCents: proof.amount,
+        settlementStatus: 'settled',
+        proofId: contract.id,
+        settledAt: contract.createdAt,
+        createdAt: contract.createdAt,
+      };
+      this.receipts.push(receipt);
+      for (const cb of this.onRevenueRecordedCallbacks) {
+        cb(receipt);
+      }
     }
 
     return contract;
+  }
+
+  /**
+   * Round 17.3: Verify a previously pending payment proof.
+   * Transitions pending → verified and records revenue.
+   */
+  verifyPayment(proofId: string, verification: PaymentProofVerificationResult): boolean {
+    const contract = this.proofs.find(p => p.id === proofId);
+    if (!contract || contract.status !== 'pending') return false;
+    if (!verification.verified) {
+      contract.status = 'rejected';
+      return false;
+    }
+
+    contract.status = 'verified';
+    // Use Object.assign to update readonly verification field
+    (contract as { verification?: PaymentProofVerificationResult }).verification = verification;
+
+    const surface = this.surfaces.get(contract.surfaceId);
+    if (surface) {
+      surface.totalEarnedCents += contract.proof.amount;
+      surface.transactionCount++;
+
+      const receipt: RevenueReceipt = {
+        id: `receipt_${++this.receiptIdCounter}`,
+        surfaceId: contract.surfaceId,
+        surfaceType: surface.type,
+        amountCents: contract.proof.amount,
+        settlementStatus: 'settled',
+        proofId: contract.id,
+        settledAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      };
+      this.receipts.push(receipt);
+      for (const cb of this.onRevenueRecordedCallbacks) {
+        cb(receipt);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Round 17.3: Link a fulfillment record to a payment proof.
+   */
+  linkFulfillment(proofId: string, fulfillment: Omit<FulfillmentRecord, 'id' | 'proofId' | 'createdAt'>): FulfillmentRecord | undefined {
+    const contract = this.proofs.find(p => p.id === proofId);
+    if (!contract) return undefined;
+
+    const record: FulfillmentRecord = {
+      id: `ful_${++this.fulfillmentIdCounter}`,
+      proofId,
+      status: fulfillment.status,
+      taskId: fulfillment.taskId,
+      deliverable: fulfillment.deliverable,
+      completedAt: fulfillment.completedAt,
+      failureReason: fulfillment.failureReason,
+      createdAt: new Date().toISOString(),
+    };
+    this.fulfillments.set(record.id, record);
+    contract.fulfillmentId = record.id;
+    return record;
+  }
+
+  /**
+   * Round 17.3: Get fulfillment status for a payment proof.
+   */
+  getFulfillmentStatus(proofId: string): FulfillmentRecord | undefined {
+    const contract = this.proofs.find(p => p.id === proofId);
+    if (!contract?.fulfillmentId) return undefined;
+    return this.fulfillments.get(contract.fulfillmentId);
+  }
+
+  /**
+   * Round 17.3: Get all unfulfilled verified payments (pending fulfillment).
+   */
+  getUnfulfilledPayments(): PaymentProofContract[] {
+    return this.proofs.filter(p =>
+      p.status === 'verified' &&
+      (!p.fulfillmentId || this.fulfillments.get(p.fulfillmentId)?.status === 'pending'),
+    );
   }
 
   /**
@@ -309,6 +448,13 @@ export class RevenueSurfaceRegistry {
   getProofs(limit?: number): PaymentProofContract[] {
     if (limit) return this.proofs.slice(-limit);
     return [...this.proofs];
+  }
+
+  /**
+   * Round 17.3: Get proofs filtered by status.
+   */
+  getProofsByStatus(status: PaymentProofStatus): PaymentProofContract[] {
+    return this.proofs.filter(p => p.status === status);
   }
 
   /**

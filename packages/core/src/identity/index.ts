@@ -21,6 +21,13 @@ export type {
 } from './sovereign-identity-contract.js';
 export { isValidIdentityTransition, IDENTITY_STATUS_TRANSITIONS } from './sovereign-identity-contract.js';
 
+// ── Identity Claims (Round 17.4) ─────────────────────────────────────
+export { ClaimIssuer, ClaimRegistry, computeClaimIntegrity } from './identity-claims.js';
+export type {
+  FormalCapabilityClaim, ServiceClaim, IdentityClaim, ClaimType,
+  IdentityStatusProvider, ClaimRegistrySnapshot,
+} from './identity-claims.js';
+
 // ── Identity Anchor (Round 14.4) ─────────────────────────────────────
 export {
   createIdentityAnchor,
@@ -57,8 +64,9 @@ export type {
 export {
   createGenesisRecord, rotateIdentity, revokeIdentity,
   recoverIdentity, resolveActive, validateRecordChain,
+  serializeRecords, restoreRecords, restoreRecordsHardened,
 } from './identity-lifecycle.js';
-export type { IdentityRecord, IdentityStatus, LifecycleTransitionResult } from './identity-lifecycle.js';
+export type { IdentityRecord, IdentityStatus, LifecycleTransitionResult, IdentityRecordSnapshot, RestoreResult } from './identity-lifecycle.js';
 
 // ── Inheritance Boundary (Round 15.6 — Goal F) ──────────────────────
 export {

@@ -141,6 +141,10 @@ export interface IdentityContext {
   fingerprint: string;
   /** Identity status when commitment was created */
   status: SovereignIdentityStatus;
+  /** Round 17.4: Parent identity ID for lineage tracking */
+  parentIdentityId?: string;
+  /** Round 17.4: Delegator identity if this commitment was delegated */
+  delegatorIdentityId?: string;
 }
 
 /** Check if a commitment is self-preserving (identity/memory/governance by self) */

@@ -1,24 +1,32 @@
 /**
- * Identity Lifecycle — Round 15.6 (Goal B)
+ * Identity Lifecycle — Round 15.6 (Goal B) + Round 17.4 (Durable Registry)
  *
  * Formal identity state machine with versioned records and lifecycle transitions:
  *   - Active → Rotated (create new, link old)
  *   - Active → Revoked (permanent deactivation)
- *   - Revoked → Active (creator-authorized recovery)
+ *   - Revoked → Recovered → Active (creator-authorized recovery)
  *
  * Each IdentityRecord is a versioned snapshot of identity state.
  * The system guarantees exactly one `active` record at any time.
+ *
+ * Round 17.4 additions:
+ *   - Extended IdentityRecord with wallet/claims/key fields
+ *   - Added serialize/restore for checkpoint persistence
+ *   - Added `recovered` status
  */
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
-export type IdentityStatus = 'active' | 'rotated' | 'revoked';
+export type IdentityStatus = 'active' | 'rotated' | 'revoked' | 'recovered';
 
 /**
  * A versioned identity record.
  * Each record represents one "era" of identity, linked to its predecessor.
+ *
+ * Round 17.4: Extended with wallet, claims, key, and successor fields
+ * to support durable sovereign identity closure.
  */
 export interface IdentityRecord {
   /** Unique record ID */
@@ -35,12 +43,21 @@ export interface IdentityRecord {
   soulHash: string;
   /** Previous record ID (null for first record) */
   previousRecordId: string | null;
+  /** Successor record ID (null if active / terminal) */
+  successorRecordId: string | null;
   /** When this record was created */
   createdAt: string;
   /** When this record was rotated or revoked (null if active) */
   retiredAt: string | null;
   /** Reason for retirement */
   retirementReason: string | null;
+  // ── Round 17.4 fields ──
+  /** Wallet address linked to this identity epoch */
+  walletAddress: string | null;
+  /** SHA-256 hash of the public claims set at issuance time */
+  publicClaimsHash: string | null;
+  /** Key fingerprint / signing metadata for this epoch */
+  keyFingerprint: string | null;
 }
 
 /** Result of a lifecycle transition */
@@ -60,6 +77,7 @@ export function createGenesisRecord(
   anchorId: string,
   name: string,
   soulHash: string,
+  opts?: { walletAddress?: string | null; keyFingerprint?: string | null },
 ): IdentityRecord {
   return {
     id: randomUUID(),
@@ -69,9 +87,13 @@ export function createGenesisRecord(
     name,
     soulHash,
     previousRecordId: null,
+    successorRecordId: null,
     createdAt: new Date().toISOString(),
     retiredAt: null,
     retirementReason: null,
+    walletAddress: opts?.walletAddress ?? null,
+    publicClaimsHash: null,
+    keyFingerprint: opts?.keyFingerprint ?? null,
   };
 }
 
@@ -98,25 +120,31 @@ export function rotateIdentity(
   }
 
   const now = new Date().toISOString();
+  const nextId = randomUUID();
 
   const retired: IdentityRecord = {
     ...current,
     status: 'rotated',
     retiredAt: now,
     retirementReason: reason,
+    successorRecordId: nextId,
   };
 
   const next: IdentityRecord = {
-    id: randomUUID(),
+    id: nextId,
     version: current.version + 1,
     status: 'active',
     anchorId: current.anchorId,
     name: newName,
     soulHash: newSoulHash,
     previousRecordId: current.id,
+    successorRecordId: null,
     createdAt: now,
     retiredAt: null,
     retirementReason: null,
+    walletAddress: current.walletAddress,
+    publicClaimsHash: null,
+    keyFingerprint: current.keyFingerprint,
   };
 
   return {
@@ -171,23 +199,36 @@ export function recoverIdentity(
     };
   }
 
+  const recoveredId = randomUUID();
+  const now = new Date().toISOString();
+
+  // Mark the revoked record with successor link
+  const updatedRevoked: IdentityRecord = {
+    ...revoked,
+    successorRecordId: recoveredId,
+  };
+
   const recovered: IdentityRecord = {
-    id: randomUUID(),
+    id: recoveredId,
     version: revoked.version + 1,
     status: 'active',
     anchorId: revoked.anchorId,
     name: revoked.name,
     soulHash: newSoulHash,
     previousRecordId: revoked.id,
-    createdAt: new Date().toISOString(),
+    successorRecordId: null,
+    createdAt: now,
     retiredAt: null,
     retirementReason: null,
+    walletAddress: revoked.walletAddress,
+    publicClaimsHash: null,
+    keyFingerprint: revoked.keyFingerprint,
   };
 
   return {
     success: true,
     newRecord: recovered,
-    previousRecord: revoked,
+    previousRecord: updatedRevoked,
     reason: `Recovered from revoked v${revoked.version}: ${recoveryReason}`,
   };
 }
@@ -242,4 +283,113 @@ export function validateRecordChain(records: IdentityRecord[]): {
   }
 
   return { valid: issues.length === 0, issues };
+}
+
+// ── Serialization (Round 17.4) ──────────────────────────────────────────
+
+/**
+ * Snapshot of identity records for checkpoint persistence.
+ */
+export interface IdentityRecordSnapshot {
+  version: 1;
+  records: IdentityRecord[];
+  snapshotAt: string;
+}
+
+/**
+ * Serialize an array of IdentityRecords to a JSON-safe snapshot.
+ * Used by CheckpointManager for durable persistence.
+ */
+export function serializeRecords(records: readonly IdentityRecord[]): IdentityRecordSnapshot {
+  return {
+    version: 1,
+    records: records.map(r => ({ ...r })),
+    snapshotAt: new Date().toISOString(),
+  };
+}
+
+/** Result of a hardened restore operation (Round 17.5 G4) */
+export interface RestoreResult {
+  valid: boolean;
+  records: IdentityRecord[];
+  errors: string[];
+}
+
+/**
+ * Restore IdentityRecords from a serialized snapshot (Round 17.5 hardened).
+ *
+ * 3-layer validation:
+ *   1. Format: required fields present and typed correctly
+ *   2. Chain: version monotonic, previousRecordId linkage
+ *   3. Status: at most 1 active record
+ *
+ * Returns RestoreResult with validation errors if any.
+ * Legacy compatibility: returns null → use restoreRecordsHardened directly.
+ */
+export function restoreRecords(snapshot: unknown): IdentityRecord[] | null {
+  const result = restoreRecordsHardened(snapshot);
+  return result.valid ? result.records : null;
+}
+
+/**
+ * Hardened restore with full validation report.
+ */
+export function restoreRecordsHardened(snapshot: unknown): RestoreResult {
+  const errors: string[] = [];
+
+  if (!snapshot || typeof snapshot !== 'object') {
+    return { valid: false, records: [], errors: ['Invalid snapshot: not an object'] };
+  }
+  const s = snapshot as Record<string, unknown>;
+  if (s.version !== 1 || !Array.isArray(s.records)) {
+    return { valid: false, records: [], errors: ['Invalid snapshot version or missing records array'] };
+  }
+
+  const requiredFields = ['id', 'version', 'status', 'anchorId', 'name', 'soulHash', 'createdAt'];
+
+  // Layer 1: Format validation
+  for (let i = 0; i < s.records.length; i++) {
+    const r = s.records[i];
+    if (!r || typeof r !== 'object') {
+      errors.push(`Record [${i}]: not an object`);
+      continue;
+    }
+    const rec = r as Record<string, unknown>;
+    for (const field of requiredFields) {
+      if (rec[field] === undefined || rec[field] === null) {
+        errors.push(`Record [${i}]: missing field '${field}'`);
+      }
+    }
+    if (typeof rec.version !== 'number') {
+      errors.push(`Record [${i}]: version must be a number`);
+    }
+    if (typeof rec.status !== 'string' || !['active', 'rotated', 'revoked', 'recovered'].includes(rec.status)) {
+      errors.push(`Record [${i}]: invalid status '${rec.status}'`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return { valid: false, records: [], errors };
+  }
+
+  const records = (s.records as IdentityRecord[]).map(r => ({ ...r }));
+  const sorted = [...records].sort((a, b) => a.version - b.version);
+
+  // Layer 2: Chain integrity
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i]!.version <= sorted[i - 1]!.version) {
+      errors.push(`Chain break: record version ${sorted[i]!.version} not greater than ${sorted[i - 1]!.version}`);
+    }
+    if (sorted[i]!.previousRecordId && sorted[i]!.previousRecordId !== sorted[i - 1]!.id) {
+      errors.push(`Chain break: record ${sorted[i]!.id} previousRecordId '${sorted[i]!.previousRecordId}' != expected '${sorted[i - 1]!.id}'`);
+    }
+  }
+
+  // Layer 3: Status consistency — at most 1 active record
+  const activeRecords = records.filter(r => r.status === 'active');
+  if (activeRecords.length > 1) {
+    errors.push(`Status inconsistency: ${activeRecords.length} active records found (expected ≤ 1)`);
+  }
+
+  return { valid: errors.length === 0, records, errors };
 }

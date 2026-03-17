@@ -19,7 +19,10 @@ export type GovernanceActionKind =
   | 'identity_rotation'       // rotating identity credentials
   | 'identity_revocation'     // revoking identity
   | 'external_declaration'    // publishing or broadcasting externally
-  | 'dangerous_action';       // high-risk file/system/network ops
+  | 'dangerous_action'        // high-risk file/system/network ops
+  | 'delegate_task'           // delegate a task to a peer (Round 17.2)
+  | 'delegate_selfmod'        // delegate self-modification to a peer (Round 17.2)
+  | 'delegate_dangerous_action'; // delegate dangerous action to a peer (Round 17.2)
 
 // ── Risk Levels ───────────────────────────────────────────────────────
 
@@ -34,11 +37,14 @@ export const ACTION_RISK_MAP: Record<GovernanceActionKind, GovernanceRiskLevel> 
   identity_revocation: 'critical',
   external_declaration: 'high',
   dangerous_action: 'critical',
+  delegate_task: 'high',
+  delegate_selfmod: 'high',
+  delegate_dangerous_action: 'critical',
 };
 
 // ── Rollback Strategy ─────────────────────────────────────────────────
 
-export type RollbackStrategyKind = 'git-revert' | 'terminate-child' | 'irreversible';
+export type RollbackStrategyKind = 'git-revert' | 'terminate-child' | 'irreversible' | 'revoke-delegation';
 
 export interface RollbackPlan {
   strategy: RollbackStrategyKind;
@@ -55,6 +61,9 @@ export const ACTION_ROLLBACK_MAP: Record<GovernanceActionKind, RollbackStrategyK
   identity_revocation: 'irreversible',
   external_declaration: 'irreversible',
   dangerous_action: 'irreversible',
+  delegate_task: 'revoke-delegation',
+  delegate_selfmod: 'revoke-delegation',
+  delegate_dangerous_action: 'revoke-delegation',
 };
 
 // ── Governance Decision ───────────────────────────────────────────────
@@ -67,12 +76,14 @@ export type GovernanceDenialLayer =
   | 'policy'
   | 'identity'
   | 'economy'
+  | 'risk'                // Round 17.0: risk-level escalation
   | 'approval_missing';
 
 // ── Governance Status ─────────────────────────────────────────────────
 
 export type GovernanceStatus =
   | 'proposed'
+  | 'proposal_invalid'      // Round 17.5: initiation rejected (e.g. revoked identity)
   | 'evaluating'
   | 'approved'
   | 'denied'
@@ -86,22 +97,23 @@ export type GovernanceStatus =
 
 /** Terminal statuses — no further transitions allowed */
 export const TERMINAL_STATUSES: readonly GovernanceStatus[] = [
-  'denied', 'verified', 'rolled_back',
+  'denied', 'verified', 'rolled_back', 'proposal_invalid',
 ];
 
 /** Valid status transitions */
 export const STATUS_TRANSITIONS: Record<GovernanceStatus, readonly GovernanceStatus[]> = {
-  proposed:    ['evaluating'],
-  evaluating:  ['approved', 'denied', 'escalated'],
-  approved:    ['applying'],
-  denied:      [],
-  escalated:   ['approved', 'denied'],
-  applying:    ['applied', 'failed'],
-  applied:     ['verifying', 'rolled_back'],
-  verifying:   ['verified', 'failed'],
-  verified:    [],
-  failed:      ['rolled_back', 'applying'], // retry or rollback
-  rolled_back: [],
+  proposed:          ['evaluating'],
+  proposal_invalid:  [],                              // Round 17.5: terminal
+  evaluating:        ['approved', 'denied', 'escalated'],
+  approved:          ['applying'],
+  denied:            [],
+  escalated:         ['approved', 'denied'],
+  applying:          ['applied', 'failed'],
+  applied:           ['verifying', 'rolled_back'],
+  verifying:         ['verified', 'failed'],
+  verified:          [],
+  failed:            ['rolled_back', 'applying'], // retry or rollback
+  rolled_back:       [],
 };
 
 export function isValidStatusTransition(
@@ -117,6 +129,8 @@ export interface GovernanceActor {
   identityId: string;
   identityStatus: 'active' | 'degraded' | 'recovering' | 'rotated' | 'revoked';
   origin: 'creator' | 'self' | 'child' | 'peer' | 'external' | 'system';
+  /** Round 17.4: Parent identity ID for lineage tracking */
+  parentIdentityId?: string;
 }
 
 // ── Governance Proposal ───────────────────────────────────────────────
@@ -158,7 +172,7 @@ export interface GovernanceProposal {
 
 // ── Governance Receipt ────────────────────────────────────────────────
 
-export type GovernanceReceiptPhase = 'decision' | 'apply' | 'verify' | 'rollback';
+export type GovernanceReceiptPhase = 'initiation' | 'decision' | 'apply' | 'verify' | 'rollback';
 
 export interface GovernanceReceipt {
   /** Unique receipt ID */
@@ -184,6 +198,12 @@ export interface GovernanceReceipt {
     modRecordId?: string;
     /** Lineage record ID (Round 16.5) */
     lineageRecordId?: string;
+    /** Governance verdict ID (Round 17.1) */
+    verdictId?: string;
+    /** Delegated peer ID (Round 17.2) */
+    delegatedPeerId?: string;
+    /** Delegation scope ID (Round 17.2) */
+    delegationScopeId?: string;
   };
 }
 
@@ -196,6 +216,25 @@ export interface ProposalInput {
   expectedCostCents?: number;
   /** Action-specific payload (e.g. file content for selfmod, genesis config for replication) */
   payload?: Record<string, unknown>;
+  /** Delegation-specific fields (Round 17.2) */
+  delegation?: DelegationProposalFields;
+}
+
+/** Fields required when proposing a delegation action (Round 17.2) */
+export interface DelegationProposalFields {
+  /** Target peer ID to delegate to */
+  targetPeerId: string;
+  /** Description of the delegated task/action */
+  taskDescription: string;
+  /** Whether sub-delegation is requested */
+  subDelegationRequested: boolean;
+  /** Requested authority scope restrictions */
+  requestedScope?: {
+    budgetCapCents?: number;
+    allowSelfmod?: boolean;
+    allowDangerousAction?: boolean;
+    expiryMs?: number;
+  };
 }
 
 // ── Diagnostics ─────────────────────────────────────────────────────
@@ -212,4 +251,31 @@ export interface GovernanceDiagnostics {
   rollbackCount: number;
   /** Always 0 in governed-by-default mode */
   legacyBypassCount: number;
+}
+
+// ── Governance Trace (Round 17.1) ──────────────────────────────────
+
+export interface GovernanceTraceEntry {
+  proposalId: string;
+  actionKind: GovernanceActionKind;
+  status: GovernanceStatus;
+  verdictId?: string;
+  verdictCode?: string;
+  receipts: Array<{
+    id: string;
+    phase: GovernanceReceiptPhase;
+    result: 'success' | 'failure';
+    verdictId?: string;
+    lineageRecordId?: string;
+  }>;
+  lineageRecordId?: string;
+  branchControlReceiptId?: string;
+  /** Delegation-specific trace info (Round 17.2) */
+  delegation?: {
+    targetPeerId: string;
+    delegationScopeId: string;
+    delegationResult?: string;
+    violations?: string[];
+  };
+  timestamp: string;
 }

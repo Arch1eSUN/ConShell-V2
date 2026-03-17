@@ -311,6 +311,8 @@ export class CollectiveService {
     peerId: string,
     taskDescription: string,
     commitmentId?: string,
+    delegationScopeId?: string,
+    verdictId?: string,
   ): CollectiveDelegationReceipt {
     const peer = this.peers.get(peerId);
     if (!peer) throw new Error(`Peer not found: ${peerId}`);
@@ -329,6 +331,8 @@ export class CollectiveService {
       peerKind: peer.kind,
       taskDescription,
       commitmentId,
+      delegationScopeId,
+      verdictId,
       result: 'success', // will be updated by handleDelegationResult
       trustImpact: 'neutral',
       timestamp: new Date().toISOString(),
