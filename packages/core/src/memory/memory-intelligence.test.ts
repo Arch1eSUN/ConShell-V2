@@ -1,9 +1,9 @@
 /**
- * memory-intelligence.test.ts — Round 15.1 / 15.1.1 Quality Tests
+ * memory-intelligence.test.ts — Round 15.1 / 15.1.1 / 15.1.2 Quality Tests
  *
- * Proves the memory intelligence improvements:
  * Round 15.1: episodes in prompt, blended scoring, consolidation dedup
  * Round 15.1.1: dynamic budget reflow, soft dedup, continuity scoring, categorized rendering
+ * Round 15.1.2: quality closure — unified scoring, echo cap, stability bonus, event_type rendering
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../state/database.js';
@@ -72,7 +72,7 @@ describe('Memory Intelligence (Round 15.1)', () => {
       db.prepare('UPDATE episodic_memory SET created_at = datetime(\'now\', \'-30 days\') WHERE id = ?').run(oldId);
       const results = episodicRepo.findTopByRelevance(10);
       expect(results.length).toBe(2);
-      expect(results[0]!.content).toBe('Ancient history'); // 18 > 11
+      expect(results[0]!.content).toBe('Ancient history');
     });
 
     it('recent episode beats stale one at similar importance', () => {
@@ -80,7 +80,7 @@ describe('Memory Intelligence (Round 15.1)', () => {
       const oldId = episodicRepo.insert({ eventType: 'old', content: 'Stale fact', importance: 6 });
       db.prepare('UPDATE episodic_memory SET created_at = datetime(\'now\', \'-30 days\') WHERE id = ?').run(oldId);
       const results = episodicRepo.findTopByRelevance(10);
-      expect(results[0]!.content).toBe('Fresh insight'); // 13 > 12
+      expect(results[0]!.content).toBe('Fresh insight');
     });
 
     it('findTopByRelevanceForOwner scopes to owner', () => {
@@ -151,7 +151,7 @@ describe('Memory Intelligence (Round 15.1)', () => {
       const manager = new MemoryTierManager(db, silentLogger, {
         maxContextTokens: 40, ownerId: 'owner-X', ownerBudgetRatio: 0.6,
       });
-      manager.storeFact('pref', 'big', 'A'.repeat(100)); // ~25 tokens
+      manager.storeFact('pref', 'big', 'A'.repeat(100));
       manager.storeEpisode('note', 'Small memo', 5, 'sess-1');
       const ctx = manager.buildContext();
       expect(ctx.relevantFacts.length).toBe(0);
@@ -168,10 +168,10 @@ describe('Memory Intelligence (Round 15.1)', () => {
     });
   });
 
-  // ── 6. Summary / episodic soft dedup (15.1.1) ─────────────────────
+  // ── 6. Summary / episodic soft dedup (15.1.2 — echoContext) ───────
 
   describe('summary/episodic soft dedup', () => {
-    it('demotes overlapping episode with [echo] prefix instead of deleting', () => {
+    it('demoted episodes go to echoContext, not recentEpisodes', () => {
       const manager = new MemoryTierManager(db, silentLogger, { ownerId: 'owner-dedup' });
       manager.saveSessionSummary('sess-1', 'User discussed dark mode preferences and chose the midnight theme');
       episodicRepo.insert({
@@ -185,13 +185,12 @@ describe('Memory Intelligence (Round 15.1)', () => {
         importance: 6, ownerId: 'owner-dedup',
       });
       const ctx = manager.buildContext();
-      expect(ctx.recentEpisodes.length).toBe(2);
-      expect(ctx.recentEpisodes[0]).toContain('payment processing');
-      expect(ctx.recentEpisodes[1]).toContain('[echo]');
-      expect(ctx.recentEpisodes[1]).toContain('dark mode');
+      expect(ctx.recentEpisodes.some(e => e.includes('payment processing'))).toBe(true);
+      expect(ctx.echoContext.some(e => e.includes('[echo]') && e.includes('dark mode'))).toBe(true);
+      expect(ctx.recentEpisodes.every(e => !e.includes('[echo]'))).toBe(true);
     });
 
-    it('does NOT filter short episode content (<20 chars)', () => {
+    it('does NOT filter short episode content (<15 chars)', () => {
       const manager = new MemoryTierManager(db, silentLogger, { ownerId: 'owner-short' });
       manager.saveSessionSummary('sess-1', 'Short things');
       episodicRepo.insert({ eventType: 'note', content: 'Short things', importance: 5, ownerId: 'owner-short' });
@@ -203,7 +202,7 @@ describe('Memory Intelligence (Round 15.1)', () => {
   // ── 7. Explainability contracts ───────────────────────────────────
 
   describe('explainability contracts', () => {
-    it('blended score formula: importance×2 + recency_bonus', () => {
+    it('blended score formula: importance*2 + recency_bonus + stability_bonus', () => {
       episodicRepo.insert({ eventType: 'a', content: 'High recent', importance: 10 });
       const midId = episodicRepo.insert({ eventType: 'b', content: 'Mid stale', importance: 5 });
       db.prepare('UPDATE episodic_memory SET created_at = datetime(\'now\', \'-2 days\') WHERE id = ?').run(midId);
@@ -215,7 +214,7 @@ describe('Memory Intelligence (Round 15.1)', () => {
       expect(results[2]!.content).toBe('Mid stale');
     });
 
-    it('recency tiers: <1h=5, <1d=3, <7d=1, else=0', () => {
+    it('recency tiers: <1h=5, <1d=3, <7d=1, else=floor', () => {
       episodicRepo.insert({ eventType: 'x', content: 'Just now', importance: 1 });
       const h12 = episodicRepo.insert({ eventType: 'x', content: '12 hours ago', importance: 1 });
       db.prepare('UPDATE episodic_memory SET created_at = datetime(\'now\', \'-12 hours\') WHERE id = ?').run(h12);
@@ -248,9 +247,9 @@ describe('Memory Intelligence (Round 15.1)', () => {
   });
 });
 
-// ── Round 15.1.1 Hardening Tests ────────────────────────────────────────
+// ── Round 15.1.2 Quality Closure Tests ──────────────────────────────────
 
-describe('Memory Intelligence Hardening (Round 15.1.1)', () => {
+describe('Memory Intelligence Quality Closure (Round 15.1.2)', () => {
   let db: Database.Database;
   let episodicRepo: EpisodicMemoryRepository;
 
@@ -259,25 +258,145 @@ describe('Memory Intelligence Hardening (Round 15.1.1)', () => {
     episodicRepo = new EpisodicMemoryRepository(db);
   });
 
-  // ── 9. Dynamic budget reflow ──────────────────────────────────────
+  // ── 9. Budget: summaries don't monopolize owner bucket ────────────
+
+  describe('unified owner budget competition', () => {
+    it('high-score episode beats low-priority summary in owner bucket', () => {
+      const manager = new MemoryTierManager(db, silentLogger, {
+        maxContextTokens: 60, ownerId: 'owner-compete', ownerBudgetRatio: 0.6,
+      });
+      manager.saveSessionSummary('sess-1', 'Session summary about general topics');
+      episodicRepo.insert({
+        eventType: 'lesson_critical', content: 'Critical lesson learned', importance: 8, ownerId: 'owner-compete',
+      });
+      const ctx = manager.buildContext();
+      expect(ctx.recentEpisodes.length + ctx.sessionSummaries.length).toBeGreaterThanOrEqual(1);
+      expect(ctx.recentEpisodes.some(e => e.includes('Critical lesson'))).toBe(true);
+    });
+
+    it('buildContextForOwner also uses unified scoring', () => {
+      const manager = new MemoryTierManager(db, silentLogger, {
+        maxContextTokens: 60, ownerId: 'owner-for', ownerBudgetRatio: 0.6,
+      });
+      manager.saveSessionSummary('sess-1', 'General conversation about weather');
+      episodicRepo.insert({
+        eventType: 'observation', content: 'Important finding', importance: 9, ownerId: 'owner-for',
+      });
+      const ctx = manager.buildContextForOwner('owner-for');
+      expect(ctx.recentEpisodes.some(e => e.includes('Important finding'))).toBe(true);
+    });
+  });
+
+  // ── 10. Echo cap: max 2 echoes in echoContext ─────────────────────
+
+  describe('echo cap enforcement', () => {
+    it('caps echo at 2 items even with more overlapping episodes', () => {
+      const manager = new MemoryTierManager(db, silentLogger, {
+        maxContextTokens: 1000, ownerId: 'owner-echocap', ownerBudgetRatio: 0.6,
+      });
+      const summaryContent = 'The team discussed migration strategy including database schema changes and API versioning';
+      manager.saveSessionSummary('sess-1', summaryContent);
+      for (let i = 0; i < 4; i++) {
+        episodicRepo.insert({
+          eventType: 'consolidated_assistant',
+          content: `the team discussed migration strategy including database schema changes and api versioning round ${i}`,
+          importance: 5, ownerId: 'owner-echocap',
+        });
+      }
+      const ctx = manager.buildContext();
+      expect(ctx.echoContext.length).toBeLessThanOrEqual(2);
+      expect(ctx.recentEpisodes.every(e => !e.includes('[echo]'))).toBe(true);
+    });
+
+    it('echo items never appear in recentEpisodes', () => {
+      const manager = new MemoryTierManager(db, silentLogger, { ownerId: 'owner-noleak' });
+      manager.saveSessionSummary('sess-1', 'Discussed the quarterly planning meeting and budget allocation process');
+      episodicRepo.insert({
+        eventType: 'observation',
+        content: 'discussed the quarterly planning meeting and budget allocation process in detail',
+        importance: 6, ownerId: 'owner-noleak',
+      });
+      const ctx = manager.buildContext();
+      expect(ctx.recentEpisodes.every(e => !e.includes('[echo]'))).toBe(true);
+      expect(ctx.echoContext.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // ── 11. Stability bonus replaces category bonus ───────────────────
+
+  describe('stability bonus scoring', () => {
+    it('importance>=7 gets stability+2 regardless of event_type', () => {
+      episodicRepo.insert({ eventType: 'observation', content: 'Critical system observation', importance: 7 });
+      episodicRepo.insert({ eventType: 'preference_theme', content: 'Theme preference', importance: 4 });
+      const results = episodicRepo.findTopByRelevance(10);
+      expect(results[0]!.content).toBe('Critical system observation');
+    });
+
+    it('importance>=5 gets stability+1', () => {
+      episodicRepo.insert({ eventType: 'observation', content: 'Mid importance note', importance: 5 });
+      episodicRepo.insert({ eventType: 'observation', content: 'Low importance note', importance: 4 });
+      const results = episodicRepo.findTopByRelevance(10);
+      expect(results[0]!.content).toBe('Mid importance note');
+    });
+
+    it('importance>=7 old episode keeps recency floor (+1 instead of 0)', () => {
+      const oldHighId = episodicRepo.insert({ eventType: 'lesson_core', content: 'Core lesson', importance: 7 });
+      db.prepare('UPDATE episodic_memory SET created_at = datetime(\'now\', \'-30 days\') WHERE id = ?').run(oldHighId);
+      const oldLowId = episodicRepo.insert({ eventType: 'observation', content: 'Old trivial note', importance: 4 });
+      db.prepare('UPDATE episodic_memory SET created_at = datetime(\'now\', \'-30 days\') WHERE id = ?').run(oldLowId);
+      const results = episodicRepo.findTopByRelevance(10);
+      expect(results[0]!.content).toBe('Core lesson');
+      expect(results[1]!.content).toBe('Old trivial note');
+    });
+  });
+
+  // ── 12. event_type-based rendering (no regex content match) ───────
+
+  describe('event_type categorized rendering', () => {
+    it('categories based on event_type tag, not content words', () => {
+      const manager = new MemoryTierManager(db, silentLogger);
+      manager.storeEpisode('observation', 'The error rate dropped significantly', 5, 'sess-1');
+      manager.storeEpisode('lesson_core', 'Always validate input before processing', 7, 'sess-1');
+      manager.storeEpisode('preference_ui', 'User prefers compact layout', 6, 'sess-1');
+      const ctx = manager.buildContext();
+      const observationItems = ctx.recentEpisodes.filter(e => e.startsWith('[observation]'));
+      const lessonItems = ctx.recentEpisodes.filter(e => e.startsWith('[lesson'));
+      expect(observationItems.length).toBe(1);
+      expect(observationItems[0]).toContain('error rate dropped');
+      expect(lessonItems.length).toBe(1);
+      expect(lessonItems[0]).toContain('validate input');
+    });
+
+    it('echoContext renders in separate block', () => {
+      const manager = new MemoryTierManager(db, silentLogger, { ownerId: 'owner-render' });
+      manager.saveSessionSummary('sess-1', 'Discussed performance optimization strategies for the database layer');
+      episodicRepo.insert({
+        eventType: 'consolidated_assistant',
+        content: 'discussed performance optimization strategies for the database layer and caching',
+        importance: 5, ownerId: 'owner-render',
+      });
+      const ctx = manager.buildContext();
+      expect(ctx.echoContext.length).toBeGreaterThanOrEqual(1);
+      expect(ctx.echoContext[0]).toContain('[echo]');
+    });
+  });
+
+  // ── 13. Dynamic budget reflow still works ─────────────────────────
 
   describe('dynamic budget reflow', () => {
-    it('owner leftover budget flows to shared items that were skipped', () => {
+    it('owner leftover budget flows to shared items', () => {
       const manager = new MemoryTierManager(db, silentLogger, {
         maxContextTokens: 200, ownerId: 'owner-reflow', ownerBudgetRatio: 0.6,
       });
-      // Tiny owner episode — uses ~10 tokens, leaving ~110 leftover
       manager.storeEpisode('note', 'Short memo', 5, 'sess-1');
-      // Multiple shared facts, each ~15 tokens
       for (let i = 0; i < 8; i++) {
         manager.storeFact('sys', `key-${i}`, `Value for key number ${i} with decent length`);
       }
       const ctx = manager.buildContext();
-      // With reflow: owner leftover should help fit more shared facts than raw 40% allows
       expect(ctx.relevantFacts.length).toBeGreaterThan(5);
     });
 
-    it('shared leftover budget absorbs demoted episodes', () => {
+    it('shared leftover absorbs echo items (in echoContext)', () => {
       const manager = new MemoryTierManager(db, silentLogger, {
         maxContextTokens: 500, ownerId: 'owner-reflow2', ownerBudgetRatio: 0.6,
       });
@@ -293,47 +412,8 @@ describe('Memory Intelligence Hardening (Round 15.1.1)', () => {
         importance: 5, ownerId: 'owner-reflow2',
       });
       const ctx = manager.buildContext();
-      const echoEpisodes = ctx.recentEpisodes.filter(e => e.includes('[echo]'));
-      expect(echoEpisodes.length).toBe(1);
-    });
-  });
-
-  // ── 10. Continuity scoring bonus ──────────────────────────────────
-
-  describe('continuity scoring', () => {
-    it('preference/lesson episodes rank higher than raw observations at same importance and age', () => {
-      episodicRepo.insert({ eventType: 'preference_theme', content: 'Prefers dark mode', importance: 5 });
-      episodicRepo.insert({ eventType: 'consolidated_tool_result', content: 'API call succeeded', importance: 5 });
-      episodicRepo.insert({ eventType: 'observation', content: 'Regular note', importance: 5 });
-      const results = episodicRepo.findTopByRelevance(10);
-      expect(results[0]!.content).toBe('Prefers dark mode');     // 18 (pref +3)
-      expect(results[1]!.content).toBe('API call succeeded');    // 17 (consolidated +2)
-      expect(results[2]!.content).toBe('Regular note');          // 15 (no bonus)
-    });
-
-    it('continuity bonus helps old but durable episodes compete with fresh trivial ones', () => {
-      const prefId = episodicRepo.insert({ eventType: 'preference_ui', content: 'Prefers compact layout', importance: 5 });
-      db.prepare('UPDATE episodic_memory SET created_at = datetime(\'now\', \'-30 days\') WHERE id = ?').run(prefId);
-      episodicRepo.insert({ eventType: 'observation', content: 'Opened settings page', importance: 3 });
-      const results = episodicRepo.findTopByRelevance(10);
-      // Old preference (5*2+0+3=13) beats fresh trivial (3*2+5+0=11)
-      expect(results[0]!.content).toBe('Prefers compact layout');
-    });
-  });
-
-  // ── 11. Categorized episode rendering ─────────────────────────────
-
-  describe('categorized episode rendering', () => {
-    it('preserves event_type tags for categorization in system prompt', () => {
-      const manager = new MemoryTierManager(db, silentLogger);
-      manager.storeEpisode('error_report', 'Connection timeout on API v2', 7, 'sess-1');
-      manager.storeEpisode('preference_theme', 'User chose dark mode', 6, 'sess-1');
-      manager.storeEpisode('observation', 'New user session started', 4, 'sess-1');
-      const ctx = manager.buildContext();
-      expect(ctx.recentEpisodes.length).toBe(3);
-      expect(ctx.recentEpisodes.some(e => e.includes('error_report'))).toBe(true);
-      expect(ctx.recentEpisodes.some(e => e.includes('preference_theme'))).toBe(true);
-      expect(ctx.recentEpisodes.some(e => e.includes('observation'))).toBe(true);
+      expect(ctx.echoContext.some(e => e.includes('[echo]'))).toBe(true);
+      expect(ctx.recentEpisodes.every(e => !e.includes('[echo]'))).toBe(true);
     });
   });
 });

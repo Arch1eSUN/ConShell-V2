@@ -12,6 +12,7 @@
  */
 import type Database from 'better-sqlite3';
 import type { Logger } from '../types/common.js';
+import type { StructuredEpisode } from '../runtime/behavior-guidance.js';
 import {
   WorkingMemoryRepository,
   EpisodicMemoryRepository,
@@ -42,6 +43,10 @@ export interface MemoryContext {
   recentEpisodes: string[];
   /** 已习得技能 (procedural) */
   skills: string[];
+  /** 与摘要重叠的降级 echo 条目（上限 2 条，15.1.2） */
+  echoContext: string[];
+  /** 结构化 episode 数据，供 behavior-guidance 使用 (Round 15.2) */
+  structuredEpisodes: StructuredEpisode[];
   /** 总 token 估算 */
   estimatedTokens: number;
 }
@@ -146,18 +151,15 @@ export class MemoryTierManager {
   }
 
   /**
-   * 构建LLM上下文 (Round 15.1.1 — hardened)
+   * 构建LLM上下文 (Round 15.1.2 — quality closure)
    *
-   * Budget strategy (Round 15.1.1 — dynamic reflow):
-   * - When ownerId is set: initial split 60/40 (owner/shared)
-   * - After first pass: leftover from either bucket flows to the other
-   * - When no ownerId: unified budget
+   * Budget: owner/shared split with unified scoring within owner bucket.
+   * Summaries and episodes compete by score, not insertion order.
    *
-   * Dedup strategy (Round 15.1.1 — soft dedup):
-   * - Overlapping episodes are demoted with [echo] prefix, not deleted
-   * - Non-overlapping episodes packed first, then demoted ones fill remaining budget
+   * Dedup: echo capped at MAX_ECHO (2), stored in echoContext (not recentEpisodes).
    */
   buildContext(): MemoryContext {
+    const MAX_ECHO = 2;
     const totalBudget = this.opts.maxContextTokens;
     const ctx: MemoryContext = {
       sessionSummaries: [],
@@ -165,10 +167,11 @@ export class MemoryTierManager {
       relationships: [],
       recentEpisodes: [],
       skills: [],
+      echoContext: [],
+      structuredEpisodes: [],
       estimatedTokens: 0,
     };
 
-    // Budget split: owner-local vs shared
     const hasOwner = !!this.opts.ownerId;
     let ownerBudget = hasOwner
       ? Math.floor(totalBudget * this.opts.ownerBudgetRatio)
@@ -177,39 +180,73 @@ export class MemoryTierManager {
       ? totalBudget - ownerBudget
       : totalBudget;
 
-    // ── Pass 1: Owner-scoped tiers ──────────────────────────────────
+    // ── Pass 1: Owner-scoped tiers — unified scoring ────────────────
 
-    // 1. Session summaries
+    // Collect all owner candidates with scores
     const summaries: SessionSummaryRow[] = this.opts.ownerId
       ? this.sessionRepo.findRecentByOwner(this.opts.ownerId, 5)
       : this.sessionRepo.findRecent(5);
-    for (const s of summaries) {
-      const tokens = this.estimateTokens(s.summary);
-      if (ownerBudget - tokens < 0) break;
-      ctx.sessionSummaries.push(s.summary);
-      ownerBudget -= tokens;
-    }
 
-    // 2. Episodic memories — soft dedup: demote overlapping, don't delete
     const episodes: EpisodicMemoryRow[] = this.opts.ownerId
       ? this.episodicRepo.findTopByRelevanceForOwner(this.opts.ownerId, this.opts.warmLimit)
       : this.episodicRepo.findTopByRelevance(this.opts.warmLimit);
-    const demotedEpisodes: string[] = [];
+
+    // Soft dedup: separate overlapping episodes
+    const cleanEpisodes: Array<{ text: string; score: number; row: EpisodicMemoryRow }> = [];
+    const echoPool: string[] = [];
     for (const e of episodes) {
       const text = `[${e.event_type}] ${e.content}`;
-      if (this.isOverlappingWithSummaries(e.content, ctx.sessionSummaries)) {
-        demotedEpisodes.push(`[echo] ${text}`); // soft dedup: demote, don't delete
-        continue;
+      if (this.isOverlappingWithSummaries(e.content, summaries.map(s => s.summary))) {
+        echoPool.push(`[echo] ${text}`);
+      } else {
+        cleanEpisodes.push({
+          text,
+          score: (e as any).relevance_score ?? e.importance * 2,
+          row: e,
+        });
       }
-      const tokens = this.estimateTokens(text);
-      if (ownerBudget - tokens < 0) break;
-      ctx.recentEpisodes.push(text);
+    }
+
+    // Score summaries — recency-based (most recent = highest)
+    const scoredSummaries = summaries.map((s, i) => ({
+      text: s.summary,
+      score: 20 - i * 2, // most recent summary gets highest score
+      type: 'summary' as const,
+    }));
+
+    const scoredEpisodes = cleanEpisodes.map(e => ({
+      text: e.text,
+      score: e.score,
+      type: 'episode' as const,
+      sourceRow: e.row,
+    }));
+
+    // Unified sort: all owner items compete by score
+    const ownerCandidates = [...scoredSummaries, ...scoredEpisodes]
+      .sort((a, b) => b.score - a.score);
+
+    for (const item of ownerCandidates) {
+      const tokens = this.estimateTokens(item.text);
+      if (ownerBudget - tokens < 0) continue; // skip but try next (smaller) item
+      if (item.type === 'summary') {
+        ctx.sessionSummaries.push(item.text);
+      } else {
+        ctx.recentEpisodes.push(item.text);
+        // Round 15.2: populate structured episode for behavior guidance
+        if (item.sourceRow) {
+          ctx.structuredEpisodes.push({
+            eventType: item.sourceRow.event_type,
+            content: item.sourceRow.content,
+            importance: item.sourceRow.importance,
+            ownerId: item.sourceRow.owner_id ?? undefined,
+          });
+        }
+      }
       ownerBudget -= tokens;
     }
 
     // ── Pass 1: Shared tiers ────────────────────────────────────────
 
-    // 3. Semantic facts
     const allFacts: SemanticMemoryRow[] = this.semanticRepo.findAll();
     const facts = allFacts.slice(0, this.opts.warmLimit);
     const skippedFacts: Array<{ text: string; tokens: number }> = [];
@@ -224,7 +261,6 @@ export class MemoryTierManager {
       sharedBudget -= tokens;
     }
 
-    // 4. Relationships
     const allRels: RelationshipMemoryRow[] = this.relationshipRepo.findAll();
     const rels = allRels.slice(0, this.opts.warmLimit);
     const skippedRels: Array<{ text: string; tokens: number }> = [];
@@ -239,7 +275,6 @@ export class MemoryTierManager {
       sharedBudget -= tokens;
     }
 
-    // 5. Procedural knowledge
     const allProcs: ProceduralMemoryRow[] = this.proceduralRepo.findAll();
     const procedures = allProcs.slice(0, this.opts.coldLimit);
     for (const p of procedures) {
@@ -250,36 +285,36 @@ export class MemoryTierManager {
       sharedBudget -= tokens;
     }
 
-    // ── Pass 2: Dynamic budget reflow (Round 15.1.1) ────────────────
+    // ── Pass 2: Dynamic budget reflow ───────────────────────────────
     if (hasOwner) {
-      // Owner leftover → try fitting skipped shared items
-      for (const item of [...skippedFacts]) {
+      // Owner leftover → skipped shared items
+      for (const item of skippedFacts) {
         if (ownerBudget - item.tokens >= 0) {
           ctx.relevantFacts.push(item.text);
           ownerBudget -= item.tokens;
         }
       }
-      for (const item of [...skippedRels]) {
+      for (const item of skippedRels) {
         if (ownerBudget - item.tokens >= 0) {
           ctx.relationships.push(item.text);
           ownerBudget -= item.tokens;
         }
       }
 
-      // Shared leftover → try fitting demoted episodes
-      for (const text of demotedEpisodes) {
+      // Shared leftover → echo (capped at MAX_ECHO)
+      for (const text of echoPool.slice(0, MAX_ECHO)) {
         const tokens = this.estimateTokens(text);
         if (sharedBudget - tokens >= 0) {
-          ctx.recentEpisodes.push(text);
+          ctx.echoContext.push(text);
           sharedBudget -= tokens;
         }
       }
     } else {
-      // Unified budget: just try fitting demoted episodes with remaining budget
-      for (const text of demotedEpisodes) {
+      // Unified: echo into remaining budget
+      for (const text of echoPool.slice(0, MAX_ECHO)) {
         const tokens = this.estimateTokens(text);
         if (ownerBudget - tokens >= 0) {
-          ctx.recentEpisodes.push(text);
+          ctx.echoContext.push(text);
           ownerBudget -= tokens;
         }
       }
@@ -291,9 +326,10 @@ export class MemoryTierManager {
 
   /**
    * P2-3: Build memory context explicitly scoped to the given ownerId.
-   * Round 15.1.1 hardened: dynamic reflow + soft dedup.
+   * Round 15.1.2: unified scoring + echo cap.
    */
   buildContextForOwner(ownerId: string): MemoryContext {
+    const MAX_ECHO = 2;
     const totalBudget = this.opts.maxContextTokens;
     const ctx: MemoryContext = {
       sessionSummaries: [],
@@ -301,42 +337,63 @@ export class MemoryTierManager {
       relationships: [],
       recentEpisodes: [],
       skills: [],
+      echoContext: [],
+      structuredEpisodes: [],
       estimatedTokens: 0,
     };
 
-    // Budget split: always 60/40 since we have an explicit owner
     let ownerBudget = Math.floor(totalBudget * this.opts.ownerBudgetRatio);
     let sharedBudget = totalBudget - ownerBudget;
 
-    // ── Pass 1: Owner-scoped tiers ─────────────────────────────────
+    // ── Pass 1: Owner-scoped tiers — unified scoring ────────────────
 
-    // 1. Owner-scoped session summaries
     const summaries = this.sessionRepo.findRecentByOwner(ownerId, 5);
-    for (const s of summaries) {
-      const tokens = this.estimateTokens(s.summary);
-      if (ownerBudget - tokens < 0) break;
-      ctx.sessionSummaries.push(s.summary);
-      ownerBudget -= tokens;
-    }
-
-    // 2. Owner-scoped episodic memories — soft dedup
     const episodes = this.episodicRepo.findTopByRelevanceForOwner(ownerId, this.opts.warmLimit);
-    const demotedEpisodes: string[] = [];
+
+    // Soft dedup
+    const cleanEpisodes: Array<{ text: string; score: number; row: EpisodicMemoryRow }> = [];
+    const echoPool: string[] = [];
     for (const e of episodes) {
       const text = `[${e.event_type}] ${e.content}`;
-      if (this.isOverlappingWithSummaries(e.content, ctx.sessionSummaries)) {
-        demotedEpisodes.push(`[echo] ${text}`);
-        continue;
+      if (this.isOverlappingWithSummaries(e.content, summaries.map(s => s.summary))) {
+        echoPool.push(`[echo] ${text}`);
+      } else {
+        cleanEpisodes.push({
+          text,
+          score: (e as any).relevance_score ?? e.importance * 2,
+          row: e,
+        });
       }
-      const tokens = this.estimateTokens(text);
-      if (ownerBudget - tokens < 0) break;
-      ctx.recentEpisodes.push(text);
+    }
+
+    // Unified sort: summaries + episodes compete by score
+    const ownerCandidates = [
+      ...summaries.map((s, i) => ({ text: s.summary, score: 20 - i * 2, type: 'summary' as const })),
+      ...cleanEpisodes.map(e => ({ text: e.text, score: e.score, type: 'episode' as const, sourceRow: e.row })),
+    ].sort((a, b) => b.score - a.score);
+
+    for (const item of ownerCandidates) {
+      const tokens = this.estimateTokens(item.text);
+      if (ownerBudget - tokens < 0) continue;
+      if (item.type === 'summary') {
+        ctx.sessionSummaries.push(item.text);
+      } else {
+        ctx.recentEpisodes.push(item.text);
+        // Round 15.2: populate structured episode for behavior guidance
+        if (item.sourceRow) {
+          ctx.structuredEpisodes.push({
+            eventType: item.sourceRow.event_type,
+            content: item.sourceRow.content,
+            importance: item.sourceRow.importance,
+            ownerId: item.sourceRow.owner_id ?? undefined,
+          });
+        }
+      }
       ownerBudget -= tokens;
     }
 
     // ── Pass 1: Shared tiers ──────────────────────────────────────
 
-    // 3. Shared semantic facts
     const facts = this.semanticRepo.findAll().slice(0, this.opts.warmLimit);
     const skippedFacts: Array<{ text: string; tokens: number }> = [];
     for (const f of facts) {
@@ -350,7 +407,6 @@ export class MemoryTierManager {
       sharedBudget -= tokens;
     }
 
-    // 4. Shared relationships
     const rels = this.relationshipRepo.findAll().slice(0, this.opts.warmLimit);
     const skippedRels: Array<{ text: string; tokens: number }> = [];
     for (const r of rels) {
@@ -364,7 +420,6 @@ export class MemoryTierManager {
       sharedBudget -= tokens;
     }
 
-    // 5. Shared procedural knowledge
     const procs = this.proceduralRepo.findAll().slice(0, this.opts.coldLimit);
     for (const p of procs) {
       const text = `Skill "${p.name}": success=${p.success_count} fail=${p.failure_count}`;
@@ -375,24 +430,22 @@ export class MemoryTierManager {
     }
 
     // ── Pass 2: Dynamic budget reflow ───────────────────────────────
-    // Owner leftover → skipped shared items
-    for (const item of [...skippedFacts]) {
+    for (const item of skippedFacts) {
       if (ownerBudget - item.tokens >= 0) {
         ctx.relevantFacts.push(item.text);
         ownerBudget -= item.tokens;
       }
     }
-    for (const item of [...skippedRels]) {
+    for (const item of skippedRels) {
       if (ownerBudget - item.tokens >= 0) {
         ctx.relationships.push(item.text);
         ownerBudget -= item.tokens;
       }
     }
-    // Shared leftover → demoted episodes
-    for (const text of demotedEpisodes) {
+    for (const text of echoPool.slice(0, MAX_ECHO)) {
       const tokens = this.estimateTokens(text);
       if (sharedBudget - tokens >= 0) {
-        ctx.recentEpisodes.push(text);
+        ctx.echoContext.push(text);
         sharedBudget -= tokens;
       }
     }
@@ -461,18 +514,17 @@ export class MemoryTierManager {
   }
 
   /**
-   * Dedup helper (Round 15.1 — Goal B): check if episode content
-   * substantially overlaps with any already-included session summary.
-   * Bidirectional 100-char prefix comparison — explainable and testable.
+   * Dedup helper (Round 15.1.2): check if episode content
+   * substantially overlaps with any session summary.
+   * Bidirectional 80-char prefix comparison — tuned from 100 for better precision.
    */
   private isOverlappingWithSummaries(episodeContent: string, summaries: string[]): boolean {
     if (summaries.length === 0) return false;
-    const episodeNorm = episodeContent.toLowerCase().slice(0, 100);
-    if (episodeNorm.length < 20) return false; // too short to be meaningful overlap
+    const episodeNorm = episodeContent.toLowerCase().slice(0, 80);
+    if (episodeNorm.length < 15) return false; // too short to be meaningful overlap
     for (const summary of summaries) {
       const summaryNorm = summary.toLowerCase();
-      // Bidirectional: episode prefix in summary OR summary prefix in episode
-      if (summaryNorm.includes(episodeNorm) || episodeNorm.includes(summaryNorm.slice(0, 100))) {
+      if (summaryNorm.includes(episodeNorm) || episodeNorm.includes(summaryNorm.slice(0, 80))) {
         return true;
       }
     }

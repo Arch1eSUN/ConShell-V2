@@ -31,6 +31,8 @@ export interface PolicyContext {
   readonly selfModCountToday?: number;
   readonly maxSelfModPerDay?: number;
   readonly singleTxMaxCents?: number;
+  // Round 16.2 — 身份状态感知
+  readonly identityStatus?: 'active' | 'degraded' | 'recovering' | 'rotated' | 'revoked';
 }
 
 export interface PolicyResult {
@@ -317,6 +319,46 @@ const RULES: PolicyRule[] = [
     evaluate: (ctx) => {
       if (ctx.tool === 'edit_own_file') {
         return { decision: 'escalate', rule: 'selfmod-requires-git', reason: '自修改需先创建Git checkpoint', category: 'selfmod' };
+      }
+      return null;
+    },
+  },
+
+  // ══════════════════════════════════════════════════════════════════
+  // 7. IDENTITY — 身份状态感知规则 (Round 16.2)
+  // ══════════════════════════════════════════════════════════════════
+  {
+    name: 'identity-revoked-deny',
+    category: 'constitution' as PolicyCategory,
+    evaluate: (ctx: PolicyContext): PolicyResult | null => {
+      if (ctx.identityStatus === 'revoked') {
+        const highRiskTools = ['spawn_child', 'send_usdc', 'edit_own_file', 'publish', 'broadcast'];
+        if (highRiskTools.includes(ctx.tool) || ctx.action === 'external') {
+          return {
+            decision: 'deny',
+            rule: 'identity-revoked-deny',
+            reason: '身份已撤销，禁止对外操作和高风险操作',
+            category: 'constitution',
+          };
+        }
+      }
+      return null;
+    },
+  },
+  {
+    name: 'identity-degraded-restrict',
+    category: 'security' as PolicyCategory,
+    evaluate: (ctx: PolicyContext): PolicyResult | null => {
+      if (ctx.identityStatus === 'degraded' || ctx.identityStatus === 'recovering') {
+        const restrictedTools = ['spawn_child', 'send_usdc', 'edit_own_file'];
+        if (restrictedTools.includes(ctx.tool)) {
+          return {
+            decision: 'escalate',
+            rule: 'identity-degraded-restrict',
+            reason: `身份状态为 ${ctx.identityStatus}，高风险操作需要升级审批`,
+            category: 'security',
+          };
+        }
       }
       return null;
     },

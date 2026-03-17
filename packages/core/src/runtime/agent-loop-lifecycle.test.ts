@@ -46,7 +46,7 @@ function makeMemory(): MemoryTierManager {
     buildContext(): MemoryContext {
       return {
         sessionSummaries: [], relevantFacts: [], relationships: [],
-        recentEpisodes: [], skills: [], estimatedTokens: 0,
+        recentEpisodes: [], skills: [], echoContext: [], structuredEpisodes: [], estimatedTokens: 0,
       };
     },
     storeEpisode: vi.fn(),

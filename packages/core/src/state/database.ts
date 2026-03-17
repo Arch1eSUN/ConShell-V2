@@ -499,6 +499,62 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  // v9: Spend Attribution — session_id, turn_id, kind, provider, model (Round 15.3)
+  {
+    version: 9,
+    description: 'Extend spend_tracking with attribution columns for economic grounding',
+    apply(db) {
+      const alterStatements = [
+        'ALTER TABLE spend_tracking ADD COLUMN session_id TEXT DEFAULT NULL',
+        'ALTER TABLE spend_tracking ADD COLUMN turn_id TEXT DEFAULT NULL',
+        'ALTER TABLE spend_tracking ADD COLUMN kind TEXT DEFAULT \'inference\'',
+        'ALTER TABLE spend_tracking ADD COLUMN provider TEXT DEFAULT NULL',
+        'ALTER TABLE spend_tracking ADD COLUMN model TEXT DEFAULT NULL',
+      ];
+      for (const stmt of alterStatements) {
+        try { db.exec(stmt); } catch { /* column already exists — safe to ignore */ }
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_spend_session ON spend_tracking(session_id);
+        CREATE INDEX IF NOT EXISTS idx_spend_turn ON spend_tracking(turn_id);
+        CREATE INDEX IF NOT EXISTS idx_spend_kind ON spend_tracking(kind);
+      `);
+    },
+  },
+  // v10: Commitments table (Round 16.1 — Autonomous Agenda)
+  {
+    version: 10,
+    description: 'Commitments table for durable agenda and commitment runtime',
+    apply(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS commitments (
+          id                   TEXT PRIMARY KEY,
+          name                 TEXT NOT NULL,
+          description          TEXT,
+          kind                 TEXT NOT NULL,
+          origin               TEXT NOT NULL,
+          status               TEXT NOT NULL DEFAULT 'planned',
+          priority             TEXT NOT NULL DEFAULT 'normal',
+          due_at               TEXT,
+          last_evaluated_at    TEXT,
+          next_review_at       TEXT,
+          expected_value_cents INTEGER NOT NULL DEFAULT 0,
+          estimated_cost_cents INTEGER NOT NULL DEFAULT 0,
+          must_preserve        INTEGER NOT NULL DEFAULT 0,
+          revenue_bearing      INTEGER NOT NULL DEFAULT 0,
+          task_type            TEXT NOT NULL DEFAULT 'general',
+          blocked_reason       TEXT,
+          failed_reason        TEXT,
+          materialized_tasks   INTEGER NOT NULL DEFAULT 0,
+          created_at           TEXT NOT NULL,
+          updated_at           TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_commitments_status ON commitments(status);
+        CREATE INDEX IF NOT EXISTS idx_commitments_due ON commitments(due_at);
+        CREATE INDEX IF NOT EXISTS idx_commitments_review ON commitments(next_review_at);
+      `);
+    },
+  },
 ];
 
 // ── Public API ─────────────────────────────────────────────────────────

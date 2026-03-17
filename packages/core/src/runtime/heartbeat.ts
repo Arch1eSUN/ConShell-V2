@@ -1,31 +1,30 @@
 /**
- * 心跳守护 — 定时任务调度器
+ * HeartbeatDaemon — tick-based unified scheduler.
  *
- * 内置任务:
- * - 信用监控 (5 min)
- * - 健康检查 (15 min)
- * - 记忆整理 (1 hour)
- * - EvoMap心跳 (10 min)
+ * Refactored from interval-per-task to a single tick loop that
+ * executes registered phases sequentially:
+ *   health-check → economic-refresh → commitment-review
+ *
+ * Each tick runs all enabled phases in order. This ensures
+ * deterministic execution order and simplifies testing.
  */
 import type { Logger } from '../types/common.js';
 import type { EvoMapClient } from '../evomap/client.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
-export interface HeartbeatTask {
-  /** 任务名称 */
+export interface TickPhase {
+  /** Phase name (must be unique) */
   name: string;
-  /** 执行间隔 (ms) */
-  intervalMs: number;
-  /** 执行函数 */
+  /** Phase execution function */
   execute: () => Promise<void>;
-  /** 是否启用 */
+  /** Is phase enabled? */
   enabled: boolean;
 }
 
-interface RunningTask {
-  task: HeartbeatTask;
-  timer: ReturnType<typeof setInterval> | null;
+interface PhaseStats {
+  name: string;
+  enabled: boolean;
   lastRun: string | null;
   runCount: number;
   errorCount: number;
@@ -35,30 +34,39 @@ interface RunningTask {
 
 export class HeartbeatDaemon {
   private logger: Logger;
-  private tasks = new Map<string, RunningTask>();
+  private phases: TickPhase[] = [];
+  private phaseStats = new Map<string, { lastRun: string | null; runCount: number; errorCount: number }>();
+  private tickTimer: ReturnType<typeof setInterval> | null = null;
   private _running = false;
+  private _tickIntervalMs: number;
+  private _tickCount = 0;
 
-  constructor(logger: Logger) {
+  constructor(logger: Logger, tickIntervalMs = 2 * 60 * 1000) {
     this.logger = logger.child('heartbeat');
+    this._tickIntervalMs = tickIntervalMs;
   }
 
-  /** 注册心跳任务 */
-  registerTask(task: HeartbeatTask): void {
-    this.tasks.set(task.name, {
-      task,
-      timer: null,
-      lastRun: null,
-      runCount: 0,
-      errorCount: 0,
-    });
-    this.logger.debug('Task registered', { name: task.name, interval: task.intervalMs });
+  // ── Phase management ────────────────────────────────────────────────
+
+  /** Register a tick phase (executed in registration order) */
+  registerPhase(phase: TickPhase): void {
+    // Replace if already registered
+    const existing = this.phases.findIndex(p => p.name === phase.name);
+    if (existing >= 0) {
+      this.phases[existing] = phase;
+    } else {
+      this.phases.push(phase);
+    }
+    if (!this.phaseStats.has(phase.name)) {
+      this.phaseStats.set(phase.name, { lastRun: null, runCount: 0, errorCount: 0 });
+    }
+    this.logger.debug('Phase registered', { name: phase.name });
   }
 
-  /** 注册 EvoMap 心跳任务 */
-  registerEvoMapHeartbeat(evomap: EvoMapClient, intervalMs = 10 * 60 * 1000): void {
-    this.registerTask({
+  /** Register EvoMap heartbeat as a phase */
+  registerEvoMapHeartbeat(evomap: EvoMapClient, _intervalMs?: number): void {
+    this.registerPhase({
       name: 'evomap-heartbeat',
-      intervalMs,
       enabled: true,
       execute: async () => {
         try {
@@ -70,81 +78,112 @@ export class HeartbeatDaemon {
     });
   }
 
-  /** 启动所有已启用的任务 */
+  // ── Legacy compatibility: register old-style HeartbeatTask as a phase ─
+
+  registerTask(task: { name: string; intervalMs: number; execute: () => Promise<void>; enabled: boolean }): void {
+    this.registerPhase({
+      name: task.name,
+      enabled: task.enabled,
+      execute: task.execute,
+    });
+  }
+
+  // ── Tick execution ──────────────────────────────────────────────────
+
+  /** Execute one tick: run all enabled phases sequentially */
+  async tick(): Promise<void> {
+    this._tickCount++;
+
+    for (const phase of this.phases) {
+      if (!phase.enabled) continue;
+
+      const stats = this.phaseStats.get(phase.name)!;
+      try {
+        await phase.execute();
+        stats.runCount++;
+        stats.lastRun = new Date().toISOString();
+      } catch (err) {
+        stats.errorCount++;
+        this.logger.error('Tick phase error', { phase: phase.name, error: String(err) });
+      }
+    }
+  }
+
+  // ── Lifecycle ───────────────────────────────────────────────────────
+
+  /** Start the tick loop */
   start(): void {
     if (this._running) return;
     this._running = true;
 
-    for (const [name, entry] of this.tasks) {
-      if (!entry.task.enabled) continue;
+    this.tickTimer = setInterval(async () => {
+      await this.tick();
+    }, this._tickIntervalMs);
 
-      entry.timer = setInterval(async () => {
-        try {
-          await entry.task.execute();
-          entry.runCount++;
-          entry.lastRun = new Date().toISOString();
-        } catch (err) {
-          entry.errorCount++;
-          this.logger.error('Heartbeat task error', { name, error: String(err) });
-        }
-      }, entry.task.intervalMs);
-
-      this.logger.info('Task started', { name, intervalMs: entry.task.intervalMs });
-    }
-
-    this.logger.info('Heartbeat daemon started', { taskCount: this.tasks.size });
+    this.logger.info('Heartbeat daemon started (tick-based)', {
+      phaseCount: this.phases.length,
+      intervalMs: this._tickIntervalMs,
+    });
   }
 
-  /** 停止所有任务 */
+  /** Stop the tick loop */
   stop(): void {
-    for (const [name, entry] of this.tasks) {
-      if (entry.timer) {
-        clearInterval(entry.timer);
-        entry.timer = null;
-        this.logger.debug('Task stopped', { name });
-      }
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
     }
     this._running = false;
     this.logger.info('Heartbeat daemon stopped');
   }
 
-  /** 手动触发指定任务 */
-  async runNow(taskName: string): Promise<boolean> {
-    const entry = this.tasks.get(taskName);
-    if (!entry) return false;
+  /** Manually trigger a specific phase (or all if no name given) */
+  async runNow(phaseName?: string): Promise<boolean> {
+    if (phaseName) {
+      const phase = this.phases.find(p => p.name === phaseName);
+      if (!phase) return false;
 
-    try {
-      await entry.task.execute();
-      entry.runCount++;
-      entry.lastRun = new Date().toISOString();
-      return true;
-    } catch (err) {
-      entry.errorCount++;
-      this.logger.error('Manual task run failed', { name: taskName, error: String(err) });
-      return false;
+      const stats = this.phaseStats.get(phase.name)!;
+      try {
+        await phase.execute();
+        stats.runCount++;
+        stats.lastRun = new Date().toISOString();
+        return true;
+      } catch (err) {
+        stats.errorCount++;
+        this.logger.error('Manual phase run failed', { name: phaseName, error: String(err) });
+        return false;
+      }
     }
+
+    // Run full tick
+    await this.tick();
+    return true;
   }
+
+  // ── Diagnostics ─────────────────────────────────────────────────────
 
   get running(): boolean {
     return this._running;
   }
 
-  /** 统计 */
-  stats(): Array<{
-    name: string;
-    enabled: boolean;
-    intervalMs: number;
-    lastRun: string | null;
-    runCount: number;
-    errorCount: number;
-  }> {
-    return Array.from(this.tasks.values()).map(e => ({
-      name: e.task.name,
-      enabled: e.task.enabled,
-      intervalMs: e.task.intervalMs,
-      lastRun: e.lastRun,
-      runCount: e.runCount,
-      errorCount: e.errorCount,
-    }));
+  get tickCount(): number {
+    return this._tickCount;
+  }
+
+  get tickIntervalMs(): number {
+    return this._tickIntervalMs;
+  }
+
+  stats(): PhaseStats[] {
+    return this.phases.map(phase => {
+      const s = this.phaseStats.get(phase.name)!;
+      return {
+        name: phase.name,
+        enabled: phase.enabled,
+        lastRun: s.lastRun,
+        runCount: s.runCount,
+        errorCount: s.errorCount,
+      };
+    });
   }
 }

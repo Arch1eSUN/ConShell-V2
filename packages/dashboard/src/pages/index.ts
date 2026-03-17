@@ -9,3 +9,4 @@ export { SkillsPage } from './SkillsPage';
 export { WalletPage } from './WalletPage';
 export { TasksPage } from './TasksPage';
 export { MemoryPage } from './MemoryPage';
+export { EconomicPage } from './EconomicPage';

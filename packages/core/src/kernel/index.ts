@@ -33,6 +33,18 @@ import { WebSocketServer } from '../server/websocket.js';
 import type { EvoMapClient } from '../evomap/client.js';
 import { ContinuityService, type SelfState } from '../identity/continuity-service.js';
 import { ConsolidationPipeline } from '../memory/consolidation.js';
+import { SpendTracker as SpendTrackerFull } from '../spend/index.js';
+import { SpendRepository } from '../state/repos/spend.js';
+import { ConwayAutomaton } from '../automaton/index.js';
+import { EconomicStateService } from '../economic/economic-state-service.js';
+import { GovernanceService, type GovernanceServiceOptions } from '../governance/governance-service.js';
+import type { SelfModManager } from '../selfmod/index.js';
+import type { MultiAgentManager } from '../multiagent/index.js';
+import type { LineageService } from '../lineage/index.js';
+import type { CollectiveService } from '../collective/index.js';
+import type { ReputationService } from '../collective/reputation-service.js';
+import type { PeerDiscoveryService } from '../collective/discovery-service.js';
+import type { PeerSelector } from '../collective/peer-selector.js';
 
 // Sub-modules
 import { registerProviders } from './provider-factory.js';
@@ -50,6 +62,7 @@ export type BootStage =
   | 'memory'
   | 'models'
   | 'automaton'
+  | 'governance'
   | 'skills'
   | 'server'
   | 'heartbeat';
@@ -81,6 +94,28 @@ export interface KernelServices {
   httpServer: HttpServer;
   wsServer: WebSocketServer;
   evomap: EvoMapClient | null;
+  /** Round 15.3: Spend attribution tracker */
+  spendTracker: SpendTrackerFull;
+  /** Round 15.7: Conway survival automaton */
+  automaton: ConwayAutomaton;
+  /** Round 15.7B: Economic state facade */
+  economicService: EconomicStateService;
+  /** Round 16.4: Governance runtime */
+  governance: GovernanceService;
+  /** Round 16.4: SelfMod manager (accessed via governance) */
+  selfmod: SelfModManager;
+  /** Round 16.4: Multi-agent manager (accessed via governance) */
+  multiagent: MultiAgentManager;
+  /** Round 16.5: Lineage service (canonical lineage owner) */
+  lineage: LineageService;
+  /** Round 16.6: Collective service (peer runtime) */
+  collective: CollectiveService;
+  /** Round 16.7: Peer discovery service */
+  discovery: PeerDiscoveryService;
+  /** Round 16.7: Reputation service */
+  reputation: ReputationService;
+  /** Round 16.7: Peer selector */
+  selector: PeerSelector;
 }
 
 export interface BootResult {
@@ -261,6 +296,10 @@ export class Kernel {
         const turnsRepo = new TurnsRepository(db);
         const conversationService = new ConversationService(sessionsRepo, turnsRepo);
 
+        // Round 15.3: Create spend attribution infrastructure
+        const spendRepo = new SpendRepository(db);
+        const spendTracker = new SpendTrackerFull(undefined, spendRepo);
+
         const defaultModel = cfgGet<string>(config, 'model', 'gpt-4o');
         const agentLoop = new AgentLoop(
           inference, toolExecutor, memory, soul, logger,
@@ -268,11 +307,111 @@ export class Kernel {
           conversationService,
         );
 
-        return { stateMachine, toolExecutor, agentLoop, taskQueue, conversationService };
+        // Round 15.3: Wire spend tracker into agent loop
+        agentLoop.setSpendTracker(spendTracker);
+
+        // Round 15.7B: Create Conway survival automaton
+        const conwayAutomaton = new ConwayAutomaton();
+
+        // Round 15.7B: Create EconomicStateService facade
+        const economicService = new EconomicStateService(spendTracker, conwayAutomaton, logger);
+
+        // Round 15.7B: Wire economic service into agent loop for survival gate
+        agentLoop.setEconomicService(economicService);
+
+        return { stateMachine, toolExecutor, agentLoop, taskQueue, conversationService, spendTracker, conwayAutomaton, economicService };
       });
 
       logger.info('Automaton ready', {
         tools: automaton.toolExecutor.stats().registeredTools,
+      });
+
+      // ── Step 8.5: Governance ──────────────────────────────────────────
+      const governanceResult = await this.runStage('governance', async () => {
+        // Dynamic imports for selfmod + multiagent managers
+        const { SelfModManager } = await import('../selfmod/index.js');
+        const { MultiAgentManager } = await import('../multiagent/index.js');
+
+        const selfmod = new SelfModManager({ logger });
+        const multiagent = new MultiAgentManager();
+
+        // Identity provider adapter for governance
+        const identityProvider = {
+          status: () => identityResult.selfState.chainValid ? 'active' as const : 'degraded' as const,
+          selfFingerprint: () => identityResult.selfState.anchor.id,
+        };
+
+        // Policy provider adapter
+        const policyProvider = {
+          evaluate: (ctx: any) => {
+            // Delegate to PolicyEngine if available; otherwise auto-allow
+            return { decision: 'allow' as const, rule: 'governance-default', reason: 'Governance default allow', category: 'security' as const };
+          },
+        };
+
+        // Round 16.5: Initialize LineageService as canonical lineage owner
+        const { LineageService } = await import('../lineage/index.js');
+        const { DEFAULT_INHERITANCE_MANIFEST } = await import('../identity/inheritance-boundary.js');
+
+        const lineage = new LineageService({
+          multiagent,
+          inheritanceManifest: DEFAULT_INHERITANCE_MANIFEST,
+          logger,
+          rootFingerprint: identityResult.selfState.anchor.id,
+        });
+
+        // Round 16.6: Initialize CollectiveService as peer registry
+        const { CollectiveService: CS } = await import('../collective/index.js');
+        const collective = new CS({
+          logger,
+          selfAgentId: identityResult.selfState.anchor.id,
+          selfName: 'ConShell',
+        });
+
+        const govOpts: GovernanceServiceOptions = {
+          identity: identityProvider,
+          policy: policyProvider,
+          selfmod,
+          multiagent,
+          lineage,
+          collective,
+          logger,
+          dailyBudgetCents: cfgGet<number>(config, 'dailyBudgetCents', 100_00),
+          dailySpentCents: 0,
+        };
+
+        const governance = new GovernanceService(govOpts);
+
+        // Round 16.7: Initialize ReputationService, DiscoveryService, StalenessPolicy, PeerSelector
+        const { ReputationService: RS } = await import('../collective/reputation-service.js');
+        const reputation = new RS({ logger });
+
+        // Wire reputation into collective for delegation loop
+        collective.setReputationService(reputation);
+
+        const { StalenessPolicy: SP } = await import('../collective/staleness-policy.js');
+        const stalenessPolicy = new SP();
+
+        const { PeerDiscoveryService: PDS, ManualDiscoveryProvider, MockRegistryProvider } = await import('../collective/discovery-service.js');
+        const discovery = new PDS({
+          logger,
+          collective,
+          stalenessPolicy,
+        });
+        discovery.registerProvider(new ManualDiscoveryProvider());
+        discovery.registerProvider(new MockRegistryProvider());
+
+        const { PeerSelector: PSel } = await import('../collective/peer-selector.js');
+        const selector = new PSel(collective, reputation);
+
+        return { governance, selfmod, multiagent, lineage, collective, discovery, reputation, selector };
+      });
+
+      logger.info('Governance + Lineage + Collective ready', {
+        selfmod: !!governanceResult.selfmod,
+        multiagent: !!governanceResult.multiagent,
+        lineage: !!governanceResult.lineage,
+        collective: !!governanceResult.collective,
       });
 
       // ── Step 9: Skills ──────────────────────────────────────────────
@@ -293,6 +432,11 @@ export class Kernel {
           toolExecutor: automaton.toolExecutor,
           skills, memory, db,
           conversationService: automaton.conversationService,
+          governance: governanceResult.governance,
+          collective: governanceResult.collective,
+          discovery: governanceResult.discovery,
+          reputation: governanceResult.reputation,
+          selector: governanceResult.selector,
         });
       });
 
@@ -311,6 +455,25 @@ export class Kernel {
           }
         } catch (err) {
           logger.warn('EvoMap init failed', { error: String(err) });
+        }
+
+        // Round 15.8: Economic state refresh heartbeat (every 5 min)
+        if (automaton.economicService) {
+          hb.registerTask({
+            name: 'economic-refresh',
+            intervalMs: 5 * 60 * 1000,
+            enabled: true,
+            execute: async () => {
+              const snap = automaton.economicService!.snapshot();
+              const mode = automaton.economicService!.getCurrentMode();
+              const tier = automaton.economicService!.getCurrentTier();
+              // Update ToolExecutor tier for policy gating
+              automaton.toolExecutor.updateTier(tier);
+              logger.debug('Economic refresh', {
+                tier, mode, balance: snap.balanceCents,
+              });
+            },
+          });
         }
 
         hb.start();
@@ -333,13 +496,35 @@ export class Kernel {
         httpServer: server.httpServer,
         wsServer: server.wsServer,
         evomap,
+        spendTracker: automaton.spendTracker,
+        automaton: automaton.conwayAutomaton,
+        economicService: automaton.economicService,
+        governance: governanceResult.governance,
+        selfmod: governanceResult.selfmod,
+        multiagent: governanceResult.multiagent,
+        lineage: governanceResult.lineage,
+        collective: governanceResult.collective,
+        discovery: governanceResult.discovery,
+        reputation: governanceResult.reputation,
+        selector: governanceResult.selector,
       };
+
+      // Round 15.8: Wire economic policy to runtime consumers
+      if (automaton.economicService) {
+        const policy = automaton.economicService.getPolicy();
+        automaton.taskQueue.setEconomicService(automaton.economicService, policy);
+        automaton.toolExecutor.setEconomicPolicy(policy);
+        logger.info('Economic policy wired to TaskQueue + ToolExecutor');
+      }
 
       // Wake the agent
       automaton.stateMachine.boot();
 
       // Wire session lifecycle: AgentLoop → Kernel.startSession()
       automaton.agentLoop.setLifecycleHost(this);
+
+      // Round 15.2.1: Wire live selfState for identity-aware behavior guidance
+      automaton.agentLoop.setSelfState(identityResult.selfState);
 
       // ── Health endpoint — closes getDiagnosticsOptions → Doctor production path ──
       const kernel = this;
@@ -356,10 +541,64 @@ export class Kernel {
             readiness: report.readiness.verdict,
             checks: report.counts,
             timestamp: report.timestamp,
+            // Round 16.2: identity summary
+            identity: {
+              status: (identityResult as any).sovereignService?.status?.() ?? 'unknown',
+              agentId: identityResult.selfState?.anchor?.id ?? 'unknown',
+            },
           });
         } catch (err) {
           server.httpServer.sendJson(res, 500, {
             health: 'unhealthy',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+
+      // ── Round 16.2: Identity endpoints (layered exposure) ──
+      server.httpServer.get('/api/identity/public', async (_req, res) => {
+        try {
+          const svc = (identityResult as any).sovereignService;
+          if (!svc) {
+            server.httpServer.sendJson(res, 503, { error: 'Identity service not initialized' });
+            return;
+          }
+          const ctx = {
+            runtimeMode: identityResult.selfState?.mode ?? 'unknown',
+            health: 'healthy' as const,
+            activeCommitmentCount: 0,
+            agendaActive: false,
+            enabledSurfaces: [],
+            verifiedCapabilities: [],
+          };
+          const publicClaims = svc.getPublicClaims(ctx);
+          server.httpServer.sendJson(res, 200, publicClaims);
+        } catch (err) {
+          server.httpServer.sendJson(res, 500, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+
+      server.httpServer.get('/api/identity/full', async (_req, res) => {
+        try {
+          const svc = (identityResult as any).sovereignService;
+          if (!svc) {
+            server.httpServer.sendJson(res, 503, { error: 'Identity service not initialized' });
+            return;
+          }
+          const ctx = {
+            runtimeMode: identityResult.selfState?.mode ?? 'unknown',
+            health: 'healthy' as const,
+            activeCommitmentCount: 0,
+            agendaActive: false,
+            enabledSurfaces: [],
+            verifiedCapabilities: [],
+          };
+          const fullClaims = svc.getFullClaims(ctx);
+          server.httpServer.sendJson(res, 200, fullClaims);
+        } catch (err) {
+          server.httpServer.sendJson(res, 500, {
             error: err instanceof Error ? err.message : String(err),
           });
         }

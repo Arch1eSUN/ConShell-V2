@@ -46,6 +46,35 @@ export interface ApiServices {
     stats: () => { evaluations: number; denies: number; escalations: number; ruleCount: number; toolCount: number };
     listRules: () => Array<{ name: string; category: string }>;
   };
+  // ── Round 16.9.1: Economic control surface ──────────────────────────
+  economicStateService?: {
+    getProjection: () => {
+      totalRevenueCents: number; totalSpendCents: number; currentBalanceCents: number;
+      reserveCents: number; burnRateCentsPerDay: number; dailyRevenueCents: number;
+      netFlowCentsPerDay: number; runwayDays: number; survivalTier: string;
+      isSelfSustaining: boolean; revenueBySource: Record<string, number>;
+      projectedAt: string;
+    };
+    snapshot: () => {
+      balanceCents: number; survivalTier: string; burnRateCentsPerDay: number;
+      survivalDays: number; isSelfSustaining: boolean;
+    };
+    currentSurvivalState: () => {
+      tier: string; health: string; isEmergency: boolean;
+      projection: unknown; constraints: unknown;
+    };
+  };
+  survivalGate?: {
+    explain: (state: unknown) => unknown;
+    canAcceptTaskDetailed: (state: unknown, rev: boolean, pres: boolean) => unknown;
+  };
+  agendaGenerator?: {
+    explainFactors: (projection: unknown) => unknown;
+  };
+  revenueService?: {
+    stats: () => { totalRevenueCents: number; eventCount: number; byProtocol: Record<string, number> };
+    recentReceipts?: () => Array<{ surfaceId: string; amountCents: number; createdAt: string }>;
+  };
 }
 
 /**
@@ -156,6 +185,84 @@ export function createApiRoutes(services: ApiServices): ApiHandler[] {
         ...services.policyEngine?.stats(),
         rules: services.policyEngine?.listRules() ?? [],
       };
+    },
+  });
+
+  // ── Round 16.9.1: Economic Snapshot ──────────────────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/snapshot',
+    handler: async () => {
+      const svc = services.economicStateService;
+      if (!svc) {
+        return { error: 'EconomicStateService not configured' };
+      }
+      const proj = svc.getProjection();
+      const survival = svc.currentSurvivalState();
+      const revenue = services.revenueService?.stats();
+      return {
+        // Factual
+        totalRevenueCents: proj.totalRevenueCents,
+        totalSpendCents: proj.totalSpendCents,
+        currentBalanceCents: proj.currentBalanceCents,
+        revenueBySource: proj.revenueBySource,
+        // Derived
+        burnRateCentsPerDay: proj.burnRateCentsPerDay,
+        dailyRevenueCents: proj.dailyRevenueCents,
+        netFlowCentsPerDay: proj.netFlowCentsPerDay,
+        runwayDays: proj.runwayDays,
+        reserveCents: proj.reserveCents,
+        isSelfSustaining: proj.isSelfSustaining,
+        // Threshold
+        reserveFloorCents: 1_000,
+        mustPreserveWindowMinutes: 15,
+        // Explanatory
+        projectionOwner: 'EconomicStateService' as const,
+        survivalTier: proj.survivalTier,
+        economicHealth: survival.health,
+        isEmergency: survival.isEmergency,
+        // Revenue stats
+        revenueStats: revenue ?? null,
+        // Meta
+        projectedAt: proj.projectedAt,
+      };
+    },
+  });
+
+  // ── Round 16.9.1: Survival Gate Status ──────────────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/gate',
+    handler: async () => {
+      const svc = services.economicStateService;
+      const gate = services.survivalGate;
+      if (!svc || !gate) {
+        return { error: 'Economic services not configured' };
+      }
+      const state = svc.snapshot();
+      const explanation = gate.explain(state);
+      // Sample decisions for common task classes
+      const sampleDecisions = {
+        nonRevenueTask: gate.canAcceptTaskDetailed(state, false, false),
+        revenueTask: gate.canAcceptTaskDetailed(state, true, false),
+        mustPreserveTask: gate.canAcceptTaskDetailed(state, false, true),
+      };
+      return { explanation, sampleDecisions };
+    },
+  });
+
+  // ── Round 16.9.1: Agenda Economic Factors ───────────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/agenda-factors',
+    handler: async () => {
+      const svc = services.economicStateService;
+      const agenda = services.agendaGenerator;
+      if (!svc || !agenda) {
+        return { error: 'Economic or Agenda services not configured' };
+      }
+      const proj = svc.getProjection();
+      return agenda.explainFactors(proj);
     },
   });
 

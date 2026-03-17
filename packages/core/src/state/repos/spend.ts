@@ -2,12 +2,15 @@
  * SpendRepository — spend_tracking 表的持久化层
  *
  * 将 SpendTracker 的内存数据持久化到 SQLite。
- * 使用 migration v2 创建的 spend_tracking 表。
+ * Round 15.3: Extended with session_id, turn_id, kind, provider, model
+ * for spend attribution truth.
  */
 import type Database from 'better-sqlite3';
 import { nowISO } from '../database.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
+
+export type SpendKind = 'inference' | 'tool' | 'storage' | 'network' | 'compute' | 'other';
 
 export interface SpendRow {
   readonly id: number;
@@ -20,6 +23,12 @@ export interface SpendRow {
   readonly model?: string;
   readonly category?: string;
   readonly description?: string;
+  /** Attribution — which session incurred this cost */
+  readonly session_id?: string;
+  /** Attribution — which turn within the session */
+  readonly turn_id?: string;
+  /** Spend kind (inference, tool, etc.) */
+  readonly kind?: string;
   readonly created_at: string;
 }
 
@@ -30,6 +39,17 @@ export interface InsertSpend {
   readonly model?: string;
   readonly category?: string;
   readonly description?: string;
+  /** Attribution — session that incurred this cost */
+  readonly sessionId?: string;
+  /** Attribution — turn within the session */
+  readonly turnId?: string;
+  /** Spend kind (inference, tool, etc.) */
+  readonly kind?: SpendKind;
+}
+
+export interface SpendSummary {
+  readonly totalCents: number;
+  readonly count: number;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -52,11 +72,17 @@ export class SpendRepository {
   private stmtBreakdown: Database.Statement;
   private stmtRecentSpend: Database.Statement;
   private stmtAll: Database.Statement;
+  private stmtBySession: Database.Statement;
+  private stmtByTurn: Database.Statement;
 
   constructor(private readonly db: Database.Database) {
     this.stmtInsert = db.prepare(`
-      INSERT INTO spend_tracking (type, amount_cents, window_hour, window_day, created_at)
-      VALUES (@type, @amount_cents, @window_hour, @window_day, @created_at)
+      INSERT INTO spend_tracking
+        (type, amount_cents, window_hour, window_day, created_at,
+         session_id, turn_id, kind, provider, model)
+      VALUES
+        (@type, @amount_cents, @window_hour, @window_day, @created_at,
+         @session_id, @turn_id, @kind, @provider, @model)
     `);
 
     this.stmtTotalByType = db.prepare(`
@@ -94,6 +120,19 @@ export class SpendRepository {
     this.stmtAll = db.prepare(`
       SELECT * FROM spend_tracking ORDER BY id DESC LIMIT ?
     `);
+
+    // Attribution queries (Round 15.3)
+    this.stmtBySession = db.prepare(`
+      SELECT COALESCE(SUM(amount_cents), 0) as totalCents, COUNT(*) as count
+      FROM spend_tracking
+      WHERE session_id = ? AND type = 'spend'
+    `);
+
+    this.stmtByTurn = db.prepare(`
+      SELECT COALESCE(SUM(amount_cents), 0) as totalCents, COUNT(*) as count
+      FROM spend_tracking
+      WHERE turn_id = ? AND type = 'spend'
+    `);
   }
 
   /** Record a spend or income entry */
@@ -105,6 +144,11 @@ export class SpendRepository {
       window_hour: windowHour(now),
       window_day: windowDay(now),
       created_at: nowISO(),
+      session_id: entry.sessionId ?? null,
+      turn_id: entry.turnId ?? null,
+      kind: entry.kind ?? null,
+      provider: entry.provider ?? null,
+      model: entry.model ?? null,
     });
     return Number(result.lastInsertRowid);
   }
@@ -143,5 +187,17 @@ export class SpendRepository {
   /** Get recent entries */
   recent(limit: number = 50): SpendRow[] {
     return this.stmtAll.all(limit) as SpendRow[];
+  }
+
+  // ── Attribution Queries (Round 15.3) ────────────────────────────────
+
+  /** Total spend for a given session */
+  bySession(sessionId: string): SpendSummary {
+    return this.stmtBySession.get(sessionId) as SpendSummary;
+  }
+
+  /** Total spend for a given turn */
+  byTurn(turnId: string): SpendSummary {
+    return this.stmtByTurn.get(turnId) as SpendSummary;
   }
 }

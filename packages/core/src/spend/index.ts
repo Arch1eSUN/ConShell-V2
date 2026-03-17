@@ -12,6 +12,16 @@
 import type { Cents } from '../types/common.js';
 import { Cents as toCents } from '../types/common.js';
 import type { SpendRepository } from '../state/repos/spend.js';
+import type { PolicyDecision, GovernanceOverride } from './governance-types.js';
+import { GovernanceEvaluator } from './governance-evaluator.js';
+import { evaluateScopes, DEFAULT_SCOPE_CONFIGS } from './budget-scope.js';
+import type { BudgetScopeConfig } from './budget-scope.js';
+
+// Re-export new governance types for consumers
+export type { PolicyDecision, GovernanceOverride, ReasonCode, GovernanceActionId, PressureLevel, BudgetScopeId, BudgetScopeResult } from './governance-types.js';
+export { REASON_CODES, THRESHOLDS, LEVEL_CONTRACTS } from './governance-types.js';
+export type { BudgetScopeConfig } from './budget-scope.js';
+export { evaluateScopes, DEFAULT_SCOPE_CONFIGS } from './budget-scope.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -32,6 +42,32 @@ export interface SpendRecord {
 }
 
 export type SpendCategory = 'inference' | 'tool' | 'storage' | 'network' | 'compute' | 'other';
+
+// ── Round 15.4: Economic Governance Contract ─────────────────────────
+
+/** Budget pressure level based on spend utilization */
+export type SpendPressure = 'low' | 'medium' | 'high' | 'critical';
+
+/** Governance action that runtime must respect */
+export type GovernanceAction = 'allow' | 'caution' | 'degrade' | 'block';
+
+/** Full governance verdict — serializable, auditable, testable */
+export interface GovernanceVerdict {
+  /** Current budget pressure level */
+  pressure: SpendPressure;
+  /** Required runtime action */
+  action: GovernanceAction;
+  /** Human-readable explanation for audit */
+  reason: string;
+  /** Hourly budget utilization (0–1) */
+  hourlyUtilization: number;
+  /** Daily budget utilization (0–1) */
+  dailyUtilization: number;
+  /** Balance remaining as percentage (0–100) */
+  balanceRemainingPct: number;
+  /** Timestamp of assessment */
+  assessedAt: string;
+}
 
 export interface IncomeRecord {
   id: string;
@@ -112,10 +148,22 @@ export class SpendTracker {
   private alertListeners = new Set<BudgetAlertListener>();
   private idCounter = 0;
   private repo: SpendRepository | null;
+  // Round 15.5: Governance Evaluator + Override
+  private _evaluator = new GovernanceEvaluator();
+  private _override: GovernanceOverride | null = null;
+  private _scopeConfigs: BudgetScopeConfig[];
+  private _recordListeners = new Set<(type: 'spend' | 'income', record: SpendRecord | IncomeRecord) => void>();
 
   constructor(budget?: Partial<BudgetConfig>, repo?: SpendRepository) {
     this.budget = { ...DEFAULT_BUDGET, ...budget };
     this.repo = repo ?? null;
+    // Sync scope configs with budget config
+    this._scopeConfigs = [
+      { scope: 'turn', limitCents: DEFAULT_SCOPE_CONFIGS[0].limitCents, enabled: true },
+      { scope: 'session', limitCents: DEFAULT_SCOPE_CONFIGS[1].limitCents, enabled: true },
+      { scope: 'hourly', limitCents: this.budget.hourlyLimitCents, enabled: true },
+      { scope: 'daily', limitCents: this.budget.dailyLimitCents, enabled: true },
+    ];
   }
 
   // ── Record ─────────────────────────────────────────────────────────
@@ -127,7 +175,15 @@ export class SpendTracker {
   recordSpend(
     provider: string,
     costCents: number,
-    opts?: { model?: string; category?: SpendCategory; description?: string },
+    opts?: {
+      model?: string;
+      category?: SpendCategory;
+      description?: string;
+      /** Round 15.3: Attribution — session that incurred this cost */
+      sessionId?: string;
+      /** Round 15.3: Attribution — turn within the session */
+      turnId?: string;
+    },
   ): boolean {
     // Check single-spend limit
     if (costCents > this.budget.maxSingleSpendCents) {
@@ -187,6 +243,9 @@ export class SpendTracker {
         model: opts?.model,
         category: opts?.category ?? 'inference',
         description: opts?.description,
+        sessionId: opts?.sessionId,
+        turnId: opts?.turnId,
+        kind: (opts?.category ?? 'inference') as any,
       });
     }
 
@@ -210,6 +269,9 @@ export class SpendTracker {
       });
     }
 
+    // Round 15.7B: Fire record listeners
+    for (const fn of this._recordListeners) fn('spend', record);
+
     return true;
   }
 
@@ -217,13 +279,14 @@ export class SpendTracker {
    * Record income (x402 payment received, etc.)
    */
   recordIncome(source: string, amountCents: number, txHash?: string): void {
-    this.incomeRecords.push({
+    const record: IncomeRecord = {
       id: `income_${++this.idCounter}`,
       source,
       amountCents,
       txHash,
       timestamp: Date.now(),
-    });
+    };
+    this.incomeRecords.push(record);
 
     // Persist to SQLite if repo available
     if (this.repo) {
@@ -233,6 +296,90 @@ export class SpendTracker {
         description: `source:${source}${txHash ? ` tx:${txHash}` : ''}`,
       });
     }
+
+    // Round 15.7B: Fire record listeners
+    for (const fn of this._recordListeners) fn('income', record);
+  }
+
+  /**
+   * Round 15.7B: Register listener for spend/income events (used by LedgerProjection).
+   */
+  onRecord(listener: (type: 'spend' | 'income', record: SpendRecord | IncomeRecord) => void): () => void {
+    this._recordListeners.add(listener);
+    return () => this._recordListeners.delete(listener);
+  }
+
+  // ── Round 15.5: Economic Governance (Policy Layer) ─────────────────
+
+  /**
+   * Assess current spend pressure and return a structured PolicyDecision.
+   * Thin wrapper: delegates to GovernanceEvaluator with scope results.
+   * Runtime MUST consume the returned decision object.
+   *
+   * @param turnId - Current turn identifier for turn-scope filtering
+   * @param sessionId - Current session identifier for session-scope filtering
+   */
+  assessPressure(turnId?: string, sessionId?: string): PolicyDecision {
+    const scopeResults = evaluateScopes(this._scopeConfigs, {
+      records: this.spendRecords,
+      turnId,
+      sessionId,
+    });
+
+    return this._evaluator.evaluate({
+      scopeResults,
+      balanceCents: this.getBalance(),
+      balanceRemainingPct: this.getBudgetRemainingPct(),
+      override: this._override,
+    });
+  }
+
+  /**
+   * Legacy backward-compat wrapper (Round 15.4 shape).
+   * Use assessPressure() for the full PolicyDecision.
+   */
+  assessPressureLegacy(): GovernanceVerdict {
+    const decision = this.assessPressure();
+    const levelToAction: Record<string, GovernanceAction> = {
+      allow: 'allow', caution: 'caution', degrade: 'degrade', block: 'block',
+    };
+    const levelToPressure: Record<string, SpendPressure> = {
+      allow: 'low', caution: 'medium', degrade: 'high', block: 'critical',
+    };
+    const hourlyScope = decision.metricsSnapshot.scopeResults.find(s => s.scope === 'hourly');
+    const dailyScope = decision.metricsSnapshot.scopeResults.find(s => s.scope === 'daily');
+    return {
+      pressure: levelToPressure[decision.level] ?? 'low',
+      action: levelToAction[decision.level] ?? 'allow',
+      reason: decision.explanation,
+      hourlyUtilization: hourlyScope?.utilization ?? 0,
+      dailyUtilization: dailyScope?.utilization ?? 0,
+      balanceRemainingPct: decision.metricsSnapshot.balanceRemainingPct,
+      assessedAt: decision.decisionTimestamp,
+    };
+  }
+
+  /**
+   * Set a governance override (creator escape hatch).
+   * Override cannot bypass safety (balance=0).
+   */
+  setOverride(override: GovernanceOverride): void {
+    this._override = { ...override, bypassSafety: false };
+  }
+
+  /** Clear active override. */
+  clearOverride(): void {
+    this._override = null;
+  }
+
+  /** Get active override (for inspection/testing). */
+  getOverride(): GovernanceOverride | null {
+    return this._override;
+  }
+
+  /** Get spend records (for scope evaluation and testing). */
+  getSpendRecords(): ReadonlyArray<SpendRecord> {
+    return this.spendRecords;
   }
 
   // ── Queries ────────────────────────────────────────────────────────

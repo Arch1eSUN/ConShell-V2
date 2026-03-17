@@ -453,7 +453,7 @@ describe('InferenceRouter (SurvivalTier)', () => {
 describe('API Routes', () => {
   it('should create 7 API routes', () => {
     const routes = createApiRoutes({});
-    expect(routes.length).toBe(7);
+    expect(routes.length).toBe(10);
   });
 
   it('should handle wallet/info when no wallet', async () => {

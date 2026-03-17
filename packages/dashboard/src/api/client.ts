@@ -162,6 +162,74 @@ class ApiClient {
   async rawRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
     return this.request<T>(path, options);
   }
+
+  // ── Round 16.9.1: Economic Control Surface ─────────────────
+
+  async getEconomicSnapshot(): Promise<EconomicSnapshotResponse> {
+    return this.request('/api/economic/snapshot');
+  }
+
+  async getGateStatus(): Promise<GateStatusResponse> {
+    return this.request('/api/economic/gate');
+  }
+
+  async getAgendaFactors(): Promise<AgendaFactorsResponse> {
+    return this.request('/api/economic/agenda-factors');
+  }
+}
+
+// ── Economic Control Surface Types ───────────────────────────
+
+export interface EconomicSnapshotResponse {
+  totalRevenueCents: number;
+  totalSpendCents: number;
+  currentBalanceCents: number;
+  revenueBySource: Record<string, number>;
+  burnRateCentsPerDay: number;
+  dailyRevenueCents: number;
+  netFlowCentsPerDay: number;
+  runwayDays: number;
+  reserveCents: number;
+  isSelfSustaining: boolean;
+  reserveFloorCents: number;
+  mustPreserveWindowMinutes: number;
+  projectionOwner: string;
+  survivalTier: string;
+  economicHealth: string;
+  isEmergency: boolean;
+  revenueStats: { totalRevenueCents: number; eventCount: number; byProtocol: Record<string, number> } | null;
+  projectedAt: string;
+}
+
+export interface GateStatusResponse {
+  error?: string;
+  explanation?: {
+    isOpen: boolean;
+    tier: string;
+    health: string;
+    accepting: string;
+    restrictions: string[];
+    activeExemptions: string[];
+    backgroundWorkLimit: number;
+    timestamp: string;
+  };
+  sampleDecisions?: {
+    nonRevenueTask: { allowed: boolean; code: string; message: string };
+    revenueTask: { allowed: boolean; code: string; message: string };
+    mustPreserveTask: { allowed: boolean; code: string; message: string };
+  };
+}
+
+export interface AgendaFactorsResponse {
+  error?: string;
+  reservePressure?: number;
+  netFlowFactor?: number;
+  burnRateUrgency?: number;
+  overallPressureScore?: number;
+  mustPreserveFloor?: number;
+  survivalReserveWindowMinutes?: number;
+  explanation?: string;
+  timestamp?: string;
 }
 
 export const api = new ApiClient();

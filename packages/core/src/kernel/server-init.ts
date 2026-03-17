@@ -33,6 +33,18 @@ export interface ServerInitDeps {
   db?: any;
   /** Optional: ConversationService for session persistence (Round 12) */
   conversationService?: ConversationService;
+  /** Optional: GovernanceService for governance routes (Round 16.4) */
+  governance?: import('../governance/governance-service.js').GovernanceService;
+  /** Optional: LineageService for lineage routes (Round 16.5) */
+  lineage?: import('../lineage/index.js').LineageService;
+  /** Optional: CollectiveService for collective routes (Round 16.6) */
+  collective?: import('../collective/index.js').CollectiveService;
+  /** Optional: PeerDiscoveryService for discovery routes (Round 16.7) */
+  discovery?: import('../collective/discovery-service.js').PeerDiscoveryService;
+  /** Optional: ReputationService for reputation routes (Round 16.7) */
+  reputation?: import('../collective/reputation-service.js').ReputationService;
+  /** Optional: PeerSelector for delegation routes (Round 16.7) */
+  selector?: import('../collective/peer-selector.js').PeerSelector;
 }
 
 export interface ServerInstances {
@@ -91,6 +103,29 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
   registerMemoryRoutes(httpServer, memory, logger);
   registerWebChatRoutes(httpServer, deps.webChatTransport ?? null, logger);
   registerProxyRoutes(httpServer, inference, logger);
+
+  // ── Governance Routes (Round 16.4) ────────────────────────────────
+  if (deps.governance) {
+    const { registerGovernanceRoutes } = await import('../server/routes/governance.js');
+    registerGovernanceRoutes(httpServer, deps.governance, logger);
+  }
+
+  // ── Lineage Routes (Round 16.5) ──────────────────────────────────
+  if (deps.lineage) {
+    const { registerLineageRoutes } = await import('../server/routes/lineage.js');
+    registerLineageRoutes(httpServer, deps.lineage, logger);
+  }
+
+  // ── Collective Routes (Round 16.6 → 16.7) ──────────────────────
+  if (deps.collective) {
+    const { registerCollectiveRoutes } = await import('../server/routes/collective.js');
+    registerCollectiveRoutes(httpServer, {
+      collective: deps.collective,
+      discovery: deps.discovery,
+      reputation: deps.reputation,
+      selector: deps.selector,
+    }, logger);
+  }
 
   // ── ConversationService + Session Routes ──────────────────────────
   // Use the ConversationService passed from kernel if available;

@@ -19,6 +19,11 @@ import type { ToolExecutor } from './tool-executor.js';
 import type { MemoryTierManager, MemoryContext } from '../memory/tier-manager.js';
 import type { SoulSystem } from '../soul/system.js';
 import type { ConversationService } from '../channels/webchat/conversation-service.js';
+import type { SelfState } from '../identity/continuity-service.js';
+import type { SpendTracker } from '../spend/index.js';
+import type { PolicyDecision } from '../spend/governance-types.js';
+import type { EconomicStateService } from '../economic/economic-state-service.js';
+import { extractBehaviorGuidance, renderBehaviorGuidance } from './behavior-guidance.js';
 
 /** Minimal kernel surface consumed by AgentLoop for session lifecycle */
 export interface SessionLifecycleHost {
@@ -84,6 +89,12 @@ export class AgentLoop {
   private _lifecycleHost: SessionLifecycleHost | null = null;
   /** Sessions already registered via startSession — prevents double-registration */
   private _knownSessions = new Set<string>();
+  /** Optional SelfState for behavior guidance (Round 15.2) */
+  private _selfState: SelfState | null = null;
+  /** Optional SpendTracker for economic grounding (Round 15.3) */
+  private _spendTracker: SpendTracker | null = null;
+  /** Optional EconomicStateService for survival gate + value routing (Round 15.7B) */
+  private _economicService: EconomicStateService | null = null;
 
   constructor(
     router: InferenceRouter,
@@ -119,6 +130,30 @@ export class AgentLoop {
   }
 
   /**
+   * Wire SelfState for identity-aware behavior guidance (Round 15.2).
+   * When set, behavior guidance will include continuity signals.
+   */
+  setSelfState(state: SelfState): void {
+    this._selfState = state;
+  }
+
+  /**
+   * Wire SpendTracker for economic grounding (Round 15.3).
+   * When set, each inference call records spend with session/turn attribution.
+   */
+  setSpendTracker(tracker: SpendTracker): void {
+    this._spendTracker = tracker;
+  }
+
+  /**
+   * Wire EconomicStateService for survival gate + value routing (Round 15.7B).
+   * When set, each inference cycle is gated by survival tier enforcement.
+   */
+  setEconomicService(service: EconomicStateService): void {
+    this._economicService = service;
+  }
+
+  /**
    * 处理一轮用户输入 (完整ReAct循环)
    * @param userMessage - 用户消息
    * @param sessionId  - 会话标识 (隔离 hot buffer 上下文)
@@ -126,6 +161,7 @@ export class AgentLoop {
   async processMessage(userMessage: string, sessionId?: string): Promise<string> {
     const sid = sessionId ?? DEFAULT_SESSION;
     const startTime = Date.now();
+    const turnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this._turnCount++;
 
     this.logger.info('Processing message', { turn: this._turnCount, sessionId: sid });
@@ -135,6 +171,25 @@ export class AgentLoop {
       this._knownSessions.add(sid);
       this._lifecycleHost.startSession(sid);
       this.logger.debug('Session registered via lifecycle host', { sessionId: sid });
+    }
+
+    // 0a.5 Round 15.7B: Survival gate — hard-block if economic state forbids inference
+    if (this._economicService) {
+      const gate = this._economicService.getGateDecision(this.opts.defaultModel);
+      this.logger.info('Survival gate', { action: gate.action, tier: gate.tier, health: gate.health });
+
+      if (!gate.allowed) {
+        const blockMsg = `[Survival Gate] ${gate.reason}`;
+        this.memory.pushHot(sid, 'assistant', blockMsg);
+        return blockMsg;
+      }
+
+      // If restricted, override the default model
+      if (gate.action === 'restrict' && gate.suggestedModel) {
+        this.logger.info('Survival gate: model restriction', { from: this.opts.defaultModel, to: gate.suggestedModel });
+        // Store the override for this turn — don't mutate opts permanently
+        // The model will be used in the inference call below
+      }
     }
 
     // 0b. 推入 session-scoped 记忆
@@ -160,14 +215,34 @@ export class AgentLoop {
       ];
     }
 
-    // 3. ReAct 循环
+    // 3. Round 15.5: Pre-loop governance check (structured PolicyDecision)
+    let effectiveMaxIterations = this.opts.maxIterations;
+    if (this._spendTracker) {
+      const decision = this._spendTracker.assessPressure(turnId, sid);
+      this.logger.info('Governance decision (pre-loop)', { level: decision.level, actions: decision.selectedActions, reasons: decision.reasonCodes });
+
+      if (decision.selectedActions.includes('block_inference')) {
+        const blockMsg = `[Economic Governance] ${decision.explanation}. Execution blocked to protect budget.`;
+        this.memory.pushHot(sid, 'assistant', blockMsg);
+        return blockMsg;
+      }
+      if (decision.maxIterationsCap !== null) {
+        effectiveMaxIterations = Math.min(effectiveMaxIterations, decision.maxIterationsCap);
+      }
+      if (decision.selectedActions.includes('inject_guidance') && messages[0]?.role === 'system') {
+        const tag = decision.level === 'degrade' ? 'ECONOMIC GOVERNANCE — HIGH PRESSURE' : 'ECONOMIC CAUTION';
+        messages[0] = { ...messages[0], content: messages[0].content + `\n\n[${tag}] ${decision.explanation}. ${decision.level === 'degrade' ? 'You MUST give the most concise answer possible. Avoid tool calls unless absolutely critical.' : 'Prefer efficient responses and minimize unnecessary tool calls.'}` };
+      }
+    }
+
+    // 4. ReAct 循环
     let iterations = 0;
     let finalResponse = '';
     const allToolCalls: ToolCallRequest[] = [];
     const allToolResults: string[] = [];
     let totalTokens = 0;
 
-    while (iterations < this.opts.maxIterations) {
+    while (iterations < effectiveMaxIterations) {
       iterations++;
 
       // Think: 调用LLM
@@ -191,6 +266,30 @@ export class AgentLoop {
           });
         } else if (chunk.type === 'usage' && chunk.usage) {
           totalTokens += chunk.usage.inputTokens + chunk.usage.outputTokens;
+          // Round 15.3: Record spend with attribution
+          if (this._spendTracker && chunk.usage.cost != null) {
+            this._spendTracker.recordSpend(
+              'inference',
+              chunk.usage.cost as unknown as number,
+              {
+                model: this.opts.defaultModel,
+                category: 'inference',
+                description: `iter:${iterations} in:${chunk.usage.inputTokens} out:${chunk.usage.outputTokens}`,
+                sessionId: sid,
+                turnId,
+              },
+            );
+          }
+        }
+      }
+
+      // Round 15.5: Per-iteration governance re-check (structured)
+      if (this._spendTracker) {
+        const recheck = this._spendTracker.assessPressure(turnId, sid);
+        if (recheck.selectedActions.includes('block_inference')) {
+          this.logger.warn('Governance escalated to block mid-loop', { iteration: iterations, reasons: recheck.reasonCodes });
+          finalResponse = fullText || `[Economic Governance] ${recheck.explanation}. Further iterations blocked.`;
+          break;
         }
       }
 
@@ -268,6 +367,7 @@ export class AgentLoop {
   async *processMessageStream(userMessage: string, sessionId?: string): AsyncGenerator<AgentStreamEvent> {
     const sid = sessionId ?? DEFAULT_SESSION;
     const startTime = Date.now();
+    const turnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this._turnCount++;
 
     this.logger.info('Processing message (stream)', { turn: this._turnCount, sessionId: sid });
@@ -299,8 +399,28 @@ export class AgentLoop {
     const allToolResults: string[] = [];
     let totalTokens = 0;
 
+    // Round 15.5: Pre-loop governance check (stream, structured)
+    let effectiveMaxIterations = this.opts.maxIterations;
+    if (this._spendTracker) {
+      const decision = this._spendTracker.assessPressure(turnId, sid);
+      this.logger.info('Governance decision (stream pre-loop)', { level: decision.level, actions: decision.selectedActions });
+
+      if (decision.selectedActions.includes('block_inference')) {
+        const blockMsg = `[Economic Governance] ${decision.explanation}. Execution blocked to protect budget.`;
+        yield { type: 'text' as const, text: blockMsg };
+        return;
+      }
+      if (decision.maxIterationsCap !== null) {
+        effectiveMaxIterations = Math.min(effectiveMaxIterations, decision.maxIterationsCap);
+      }
+      if (decision.selectedActions.includes('inject_guidance') && messages[0]?.role === 'system') {
+        const tag = decision.level === 'degrade' ? 'ECONOMIC GOVERNANCE — HIGH PRESSURE' : 'ECONOMIC CAUTION';
+        messages[0] = { ...messages[0], content: messages[0].content + `\n\n[${tag}] ${decision.explanation}. ${decision.level === 'degrade' ? 'You MUST give the most concise answer possible.' : 'Prefer efficient responses.'}` };
+      }
+    }
+
     try {
-      while (iterations < this.opts.maxIterations) {
+      while (iterations < effectiveMaxIterations) {
         iterations++;
 
         let fullText = '';
@@ -325,6 +445,31 @@ export class AgentLoop {
             yield { type: 'tool_call' as const, toolCall: tc };
           } else if (chunk.type === 'usage' && chunk.usage) {
             totalTokens += chunk.usage.inputTokens + chunk.usage.outputTokens;
+            // Round 15.3: Record spend with attribution
+            if (this._spendTracker && chunk.usage.cost != null) {
+              this._spendTracker.recordSpend(
+                'inference',
+                chunk.usage.cost as unknown as number,
+                {
+                  model: this.opts.defaultModel,
+                  category: 'inference',
+                  description: `stream iter:${iterations} in:${chunk.usage.inputTokens} out:${chunk.usage.outputTokens}`,
+                  sessionId: sid,
+                  turnId,
+                },
+              );
+            }
+          }
+        }
+
+        // Round 15.5: Per-iteration governance re-check (stream, structured)
+        if (this._spendTracker) {
+          const recheck = this._spendTracker.assessPressure(turnId, sid);
+          if (recheck.selectedActions.includes('block_inference')) {
+            this.logger.warn('Governance escalated to block mid-loop (stream)', { iteration: iterations, reasons: recheck.reasonCodes });
+            finalResponse = fullText || `[Economic Governance] ${recheck.explanation}. Further iterations blocked.`;
+            yield { type: 'text' as const, text: `\n\n[Economic Governance] ${recheck.explanation}` };
+            break;
           }
         }
 
@@ -401,6 +546,19 @@ export class AgentLoop {
     parts.push(this.soul.buildIdentityPrompt());
     parts.push('');
 
+    // Round 15.2.1: Behavior Guidance — episodes OR selfState triggers rendering
+    // Continuity guidance is a first-class source, not gated behind episodes
+    const hasEpisodes = memCtx.structuredEpisodes && memCtx.structuredEpisodes.length > 0;
+    const hasSelfState = !!this._selfState;
+    if (hasEpisodes || hasSelfState) {
+      const guidance = extractBehaviorGuidance(memCtx.structuredEpisodes ?? [], this._selfState);
+      const rendered = renderBehaviorGuidance(guidance);
+      if (rendered) {
+        parts.push(rendered);
+        parts.push('');
+      }
+    }
+
     // 记忆上下文
     if (memCtx.sessionSummaries.length > 0) {
       parts.push('## Recent Session Summaries');
@@ -420,16 +578,20 @@ export class AgentLoop {
       parts.push('');
     }
 
-    // Round 15.1.1: categorized episode rendering
+    // Round 15.1.2: event_type-based categorized episode rendering
     if (memCtx.recentEpisodes.length > 0) {
       const lessons: string[] = [];
       const preferences: string[] = [];
       const observations: string[] = [];
 
       for (const ep of memCtx.recentEpisodes) {
-        if (/\[.*(?:error|fail|crash|bug|lesson).*\]/i.test(ep)) {
+        // Extract event_type from the [event_type] prefix tag
+        const tagMatch = ep.match(/^\[([^\]]+)\]/);
+        const tag = tagMatch ? tagMatch[1]!.toLowerCase() : '';
+
+        if (tag.startsWith('lesson') || tag.startsWith('error') || tag.startsWith('consolidated_tool')) {
           lessons.push(ep);
-        } else if (/\[.*(?:preference|config|setting|theme|chose).*\]/i.test(ep)) {
+        } else if (tag.startsWith('preference') || tag.startsWith('config')) {
           preferences.push(ep);
         } else {
           observations.push(ep);
@@ -437,20 +599,27 @@ export class AgentLoop {
       }
 
       if (lessons.length > 0) {
-        parts.push('## 🔄 Lessons Learned');
+        parts.push('## 🔄 经验教训');
         parts.push(...lessons);
         parts.push('');
       }
       if (preferences.length > 0) {
-        parts.push('## ⚡ Preferences');
+        parts.push('## ⚡ 偏好设定');
         parts.push(...preferences);
         parts.push('');
       }
       if (observations.length > 0) {
-        parts.push('## 📝 Recent Observations');
+        parts.push('## 📝 近期观察');
         parts.push(...observations);
         parts.push('');
       }
+    }
+
+    // Round 15.1.2: echo context — low-priority supplementary references
+    if (memCtx.echoContext && memCtx.echoContext.length > 0) {
+      parts.push('## 📎 补充参考（可能与摘要重复）');
+      parts.push(...memCtx.echoContext);
+      parts.push('');
     }
 
     if (memCtx.skills.length > 0) {

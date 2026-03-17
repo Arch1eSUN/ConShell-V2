@@ -4,10 +4,15 @@
  * 功能:
  * - 工具注册与查找
  * - 超时控制
+ * - 经济生存门控 (Round 15.8)
  * - 结果截断
  * - 审计日志
  */
 import type { Logger, ToolCallRequest, ToolResult } from '../types/common.js';
+import type { SurvivalTier } from '../automaton/index.js';
+import type { EconomicPolicy, CostClass, RuntimeMode } from '../economic/economic-policy.js';
+import { resolveRuntimeMode } from '../economic/economic-policy.js';
+import type { EconomicStateService } from '../economic/economic-state-service.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -18,6 +23,8 @@ export interface ToolHandler {
   description: string;
   /** 执行函数 */
   execute: (args: Record<string, unknown>) => Promise<string>;
+  /** Cost classification for economic gating (default: 'low') */
+  costClass?: CostClass;
 }
 
 export interface ToolExecutorOptions {
@@ -35,6 +42,10 @@ export class ToolExecutor {
   private opts: Required<ToolExecutorOptions>;
   private _executionCount = 0;
   private _errorCount = 0;
+  private _blockedCount = 0;
+  private _economicPolicy?: EconomicPolicy;
+  private _economicService?: EconomicStateService;
+  private _currentTier: SurvivalTier = 'normal';
 
   constructor(logger: Logger, opts?: ToolExecutorOptions) {
     this.logger = logger.child('tool-executor');
@@ -42,6 +53,23 @@ export class ToolExecutor {
       timeoutMs: opts?.timeoutMs ?? 30_000,
       maxResultLength: opts?.maxResultLength ?? 4096,
     };
+  }
+
+  /** Inject EconomicPolicy for survival gate on tools */
+  setEconomicPolicy(policy: EconomicPolicy): void {
+    this._economicPolicy = policy;
+    this.logger.info('Economic policy enabled for ToolExecutor');
+  }
+
+  /** Inject EconomicStateService for on-demand tier freshness (Round 15.9) */
+  setEconomicService(service: EconomicStateService): void {
+    this._economicService = service;
+    this.logger.info('Economic service enabled for on-demand tier reads');
+  }
+
+  /** Update the current survival tier (called by Kernel/Heartbeat as fallback) */
+  updateTier(tier: SurvivalTier): void {
+    this._currentTier = tier;
   }
 
   /** 注册工具 */
@@ -107,6 +135,54 @@ export class ToolExecutor {
 
     this.logger.debug('Executing tool', { name: call.name, id: call.id });
 
+    // Round 15.9: On-demand tier freshness — read latest tier before gating
+    if (this._economicService) {
+      this._currentTier = this._economicService.getCurrentTier();
+    }
+
+    // RuntimeMode behavior contract (Round 15.9)
+    const currentMode = resolveRuntimeMode(this._currentTier);
+    if (currentMode === 'shutdown') {
+      this._blockedCount++;
+      this.logger.info('Tool blocked: shutdown mode', { name: call.name });
+      return {
+        toolCallId: call.id,
+        name: call.name,
+        content: `Tool "${call.name}" blocked: agent in shutdown mode — all operations blocked`,
+        isError: true,
+      };
+    }
+
+    // Economic gate: check if tool execution is allowed at current tier
+    if (this._economicPolicy) {
+      const costClass = handler.costClass ?? 'low';
+      // survival-recovery mode: treat as more restrictive
+      const effectiveTier: SurvivalTier = currentMode === 'survival-recovery'
+        ? 'terminal'
+        : this._currentTier;
+
+      const decision = this._economicPolicy.evaluateAndRecord(
+        'tool-executor',
+        'tool',
+        costClass,
+        effectiveTier,
+        `tool:${call.name} mode:${currentMode}`,
+      );
+
+      if (!decision.allowed) {
+        this._blockedCount++;
+        this.logger.info('Tool blocked by economic policy', {
+          name: call.name, tier: effectiveTier, costClass, mode: currentMode, reason: decision.reason,
+        });
+        return {
+          toolCallId: call.id,
+          name: call.name,
+          content: `Tool "${call.name}" blocked: ${decision.reason}`,
+          isError: true,
+        };
+      }
+    }
+
     try {
       // Parse arguments
       let args: Record<string, unknown>;
@@ -144,10 +220,11 @@ export class ToolExecutor {
   }
 
   /** 统计 */
-  stats(): { executionCount: number; errorCount: number; registeredTools: number } {
+  stats(): { executionCount: number; errorCount: number; blockedCount: number; registeredTools: number } {
     return {
       executionCount: this._executionCount,
       errorCount: this._errorCount,
+      blockedCount: this._blockedCount,
       registeredTools: this.tools.size,
     };
   }

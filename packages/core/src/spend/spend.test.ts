@@ -165,4 +165,95 @@ describe('SpendTracker', () => {
       expect(info.dailyBurnCents).toBeGreaterThanOrEqual(0);
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════
+  // Round 15.5: PolicyDecision (upgraded from 15.4 GovernanceVerdict)
+  // ══════════════════════════════════════════════════════════════════
+
+  describe('PolicyDecision (Round 15.5)', () => {
+    it('fresh tracker → allow level, no actions', () => {
+      const d = tracker.assessPressure();
+      expect(d.level).toBe('allow');
+      expect(d.selectedActions).toEqual([]);
+      expect(d.reasonCodes).toEqual([]);
+      expect(d.violatedScopes).toEqual([]);
+      expect(d.maxIterationsCap).toBeNull();
+      expect(d.overrideable).toBe(false); // allow is not overrideable
+      expect(d.decisionTimestamp).toBeTruthy();
+      expect(d.metricsSnapshot.balanceCents).toBe(5000);
+    });
+
+    it('50% hourly utilization → caution level with guidance + cap', () => {
+      // hourlyLimitCents = 200, spend 100 → 50%
+      tracker.recordSpend('openai', 99);
+      tracker.recordSpend('openai', 1);
+      const d = tracker.assessPressure();
+      expect(d.level).toBe('caution');
+      expect(d.selectedActions).toContain('inject_guidance');
+      expect(d.selectedActions).toContain('cap_iterations');
+      expect(d.maxIterationsCap).toBe(3);
+      expect(d.reasonCodes).toContain('HOURLY_BUDGET_NEAR_LIMIT');
+    });
+
+    it('80% hourly utilization → degrade level, single iteration cap', () => {
+      tracker.recordSpend('openai', 80);
+      tracker.recordSpend('openai', 80);
+      const d = tracker.assessPressure();
+      expect(d.level).toBe('degrade');
+      expect(d.selectedActions).toContain('cap_iterations');
+      expect(d.maxIterationsCap).toBe(1);
+      expect(d.reasonCodes).toContain('DEGRADE_POLICY_TRIGGERED');
+    });
+
+    it('95%+ utilization → block level', () => {
+      tracker.recordSpend('openai', 95);
+      tracker.recordSpend('openai', 95);
+      const d = tracker.assessPressure();
+      expect(d.level).toBe('block');
+      expect(d.selectedActions).toContain('block_inference');
+      expect(d.reasonCodes).toContain('BLOCK_POLICY_TRIGGERED');
+    });
+
+    it('zero balance → block with BALANCE_EXHAUSTED reason code', () => {
+      const bigTracker = new SpendTracker({
+        dailyLimitCents: 100_000,
+        hourlyLimitCents: 100_000,
+        maxSingleSpendCents: 100_000,
+        initialBalanceCents: 100,
+      });
+      bigTracker.recordSpend('openai', 99);
+      bigTracker.recordSpend('anthropic', 1);
+      const d = bigTracker.assessPressure();
+      expect(d.level).toBe('block');
+      expect(d.reasonCodes).toContain('BALANCE_EXHAUSTED');
+      expect(d.recoveryHint).toContain('recovery requires income');
+    });
+
+    it('daily limit drives level when worse than hourly', () => {
+      const t = new SpendTracker({
+        dailyLimitCents: 200,
+        hourlyLimitCents: 10_000,
+        maxSingleSpendCents: 500,
+        initialBalanceCents: 50_000,
+      });
+      t.recordSpend('openai', 60);
+      t.recordSpend('openai', 60);
+      const d = t.assessPressure();
+      expect(d.level).toBe('caution');
+      expect(d.reasonCodes).toContain('DAILY_BUDGET_NEAR_LIMIT');
+      expect(d.violatedScopes).toContain('daily');
+    });
+
+    it('decision is serializable (JSON round-trip)', () => {
+      tracker.recordSpend('openai', 50);
+      const d = tracker.assessPressure();
+      const json = JSON.stringify(d);
+      const parsed = JSON.parse(json);
+      expect(parsed.level).toBe(d.level);
+      expect(parsed.reasonCodes).toEqual(d.reasonCodes);
+      expect(parsed.selectedActions).toEqual(d.selectedActions);
+      expect(parsed.decisionTimestamp).toBe(d.decisionTimestamp);
+      expect(parsed.metricsSnapshot).toBeDefined();
+    });
+  });
 });

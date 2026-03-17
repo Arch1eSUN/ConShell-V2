@@ -25,6 +25,7 @@ import {
   WalletPage,
   TasksPage,
   MemoryPage,
+  EconomicPage,
 } from './pages';
 
 import '@rainbow-me/rainbowkit/styles.css';
@@ -53,6 +54,7 @@ function AppInner() {
       case 'health':     return <HealthPage />;
       case 'tasks':      return <TasksPage />;
       case 'memory':     return <MemoryPage />;
+      case 'economic':   return <EconomicPage />;
       default:           return <OverviewPage />;
     }
   };

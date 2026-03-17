@@ -7,7 +7,19 @@
  * - 链上身份注册 (via ERC-8004)
  * - Agent 发现服务
  * - ★ Identity Anchor + Continuity Record (Round 14.4)
+ * - ★ Sovereign Identity Service + Claims (Round 16.2)
  */
+
+// ── Sovereign Identity (Round 16.2) ──────────────────────────────────
+export { SovereignIdentityService } from './sovereign-identity.js';
+export type { RuntimeContext } from './sovereign-identity.js';
+export type {
+  SovereignIdentityStatus, StableClaim, CapabilityClaim, OperationalClaim,
+  IdentityClaimSet, PublicClaimSet, ClaimVerification, CapabilityEntry,
+  IdentityRotationResult, IdentityRecoveryResult, IdentityRevocationResult,
+  IdentityChangeEvent, IdentityChangeListener,
+} from './sovereign-identity-contract.js';
+export { isValidIdentityTransition, IDENTITY_STATUS_TRANSITIONS } from './sovereign-identity-contract.js';
 
 // ── Identity Anchor (Round 14.4) ─────────────────────────────────────
 export {
@@ -33,6 +45,29 @@ export { PersistentAgentRegistry } from './persistent-registry.js';
 // ── ContinuityService (Round 14.5) ───────────────────────────────────
 export { ContinuityService } from './continuity-service.js';
 export type { SelfState, SelfMode, SelfExplanation } from './continuity-service.js';
+
+// ── Canonical Self Model (Round 15.6 — Goal A) ──────────────────────
+export { SelfModelService, computeSelfFingerprint } from './self-model.js';
+export type {
+  CanonicalSelf, SoulReference, WalletBinding,
+  SelfVerification, ContinuitySnapshot,
+} from './self-model.js';
+
+// ── Identity Lifecycle (Round 15.6 — Goal B) ─────────────────────────
+export {
+  createGenesisRecord, rotateIdentity, revokeIdentity,
+  recoverIdentity, resolveActive, validateRecordChain,
+} from './identity-lifecycle.js';
+export type { IdentityRecord, IdentityStatus, LifecycleTransitionResult } from './identity-lifecycle.js';
+
+// ── Inheritance Boundary (Round 15.6 — Goal F) ──────────────────────
+export {
+  DEFAULT_INHERITANCE_MANIFEST, getPolicy, getFieldsByPolicy,
+  isFieldInheritable, validateManifest,
+} from './inheritance-boundary.js';
+export type {
+  InheritanceManifest, InheritanceRule, InheritancePolicy,
+} from './inheritance-boundary.js';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
 import { createSiweMessage, signSiweMessage, generateNonce, type SiweMessage } from '../wallet/index.js';
 

@@ -122,9 +122,10 @@ export class EpisodicMemoryRepository {
   }
 
   /**
-   * Find top episodes by blended relevance score (Round 15.1.1 — hardened).
-   * Score = importance×2 + recency_bonus + continuity_bonus.
-   * Continuity bonus: consolidated/preference/lesson types get +2/+3.
+   * Find top episodes by blended relevance score (Round 15.1.2 — quality closure).
+   * Score = importance×2 + recency_bonus + stability_bonus.
+   * Stability bonus: importance≧7 → +2, importance≧5 → +1, else 0.
+   * Recency floor: importance≧7 items keep minimum +1 recency even when old.
    */
   findTopByRelevance(limit: number): EpisodicMemoryRow[] {
     return this.db.prepare(`
@@ -132,10 +133,11 @@ export class EpisodicMemoryRepository {
         WHEN created_at > datetime('now', '-1 hour') THEN 5
         WHEN created_at > datetime('now', '-1 day') THEN 3
         WHEN created_at > datetime('now', '-7 days') THEN 1
+        WHEN importance >= 7 THEN 1
         ELSE 0
       END + CASE
-        WHEN event_type LIKE 'preference%' OR event_type LIKE 'lesson%' THEN 3
-        WHEN event_type LIKE 'consolidated_%' THEN 2
+        WHEN importance >= 7 THEN 2
+        WHEN importance >= 5 THEN 1
         ELSE 0
       END) as relevance_score
       FROM episodic_memory
@@ -144,7 +146,7 @@ export class EpisodicMemoryRepository {
   }
 
   /**
-   * Find top episodes by blended relevance score, scoped to owner (Round 15.1.1).
+   * Find top episodes by blended relevance score, scoped to owner (Round 15.1.2).
    * Same scoring as findTopByRelevance but filtered to a specific owner.
    */
   findTopByRelevanceForOwner(ownerId: string, limit: number): EpisodicMemoryRow[] {
@@ -153,10 +155,11 @@ export class EpisodicMemoryRepository {
         WHEN created_at > datetime('now', '-1 hour') THEN 5
         WHEN created_at > datetime('now', '-1 day') THEN 3
         WHEN created_at > datetime('now', '-7 days') THEN 1
+        WHEN importance >= 7 THEN 1
         ELSE 0
       END + CASE
-        WHEN event_type LIKE 'preference%' OR event_type LIKE 'lesson%' THEN 3
-        WHEN event_type LIKE 'consolidated_%' THEN 2
+        WHEN importance >= 7 THEN 2
+        WHEN importance >= 5 THEN 1
         ELSE 0
       END) as relevance_score
       FROM episodic_memory

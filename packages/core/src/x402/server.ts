@@ -16,6 +16,7 @@
 import type { Logger } from '../types/common.js';
 import { Cents, addCents, ZERO_CENTS } from '../types/common.js';
 import type { IFacilitator } from '../facilitator/index.js';
+import type { SpendTracker } from '../spend/index.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -101,6 +102,7 @@ export class X402Server {
   private paymentHistory: PaymentRecord[] = [];
   private processedTxHashes = new Set<string>();
   private facilitator: IFacilitator | null;
+  private _spendTracker: SpendTracker | null = null;
 
   constructor(logger: Logger, opts: X402ServerOptions) {
     this.logger = logger.child('x402');
@@ -112,6 +114,14 @@ export class X402Server {
       paymentTtlSec: opts.paymentTtlSec ?? 300,
       facilitator: opts.facilitator as IFacilitator,
     };
+  }
+
+  /**
+   * Wire SpendTracker for automatic income recording on verified payments.
+   * Round 15.7B: Revenue bridge — closes the X402 → SpendTracker loop.
+   */
+  setSpendTracker(tracker: SpendTracker): void {
+    this._spendTracker = tracker;
   }
 
   /**
@@ -209,6 +219,12 @@ export class X402Server {
       this._paymentCount++;
       this.processedTxHashes.add(proof.txHash);
       this.logger.info('Payment verified', { txHash: proof.txHash });
+
+      // Round 15.7B: Record income in SpendTracker (revenue bridge)
+      if (this._spendTracker) {
+        this._spendTracker.recordIncome('x402', Number(proof.amount), proof.txHash);
+        this.logger.debug('Revenue recorded in SpendTracker', { amount: proof.amount, txHash: proof.txHash });
+      }
     } else {
       this.logger.warn('Payment verification failed', { txHash: proof.txHash, reason: result.reason });
     }

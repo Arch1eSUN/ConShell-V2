@@ -15,7 +15,8 @@ export type TabId =
   | 'settings'
   | 'health'
   | 'tasks'
-  | 'memory';
+  | 'memory'
+  | 'economic';
 
 interface NavItem {
   id: TabId;
@@ -31,6 +32,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'skills',    label: 'Skills',    icon: '⚡' },
   { id: 'tasks',     label: 'Tasks',     icon: '📋' },
   { id: 'memory',    label: 'Memory',    icon: '🧠' },
+  { id: 'economic',  label: 'Economic',  icon: '💎' },
   { id: 'wallet',    label: 'Wallet',    icon: '💰' },
   { id: 'logs',      label: 'Logs',      icon: '📝' },
   { id: 'health',    label: 'Health',    icon: '🩺' },

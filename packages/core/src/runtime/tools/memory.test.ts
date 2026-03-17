@@ -30,6 +30,8 @@ function createMockMemory(): MemoryTierManager {
         relationships: storedRelationships.map(r => `${r.entityId} (${r.entityType}) trust:50 interactions:0`),
         recentEpisodes: storedEpisodes.map(e => `[${e.eventType}] ${e.content}`),
         skills: ['Skill "web_browse": success=3 fail=0'],
+        echoContext: [],
+        structuredEpisodes: [],
         estimatedTokens: 100,
       };
     },

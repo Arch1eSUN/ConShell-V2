@@ -28,6 +28,8 @@ function createMockMemory(): MemoryTierManager {
       relationships: [],
       recentEpisodes: [],
       skills: [],
+      echoContext: [],
+      structuredEpisodes: [],
       estimatedTokens: 0,
     } as MemoryContext),
     storeFact: vi.fn(),

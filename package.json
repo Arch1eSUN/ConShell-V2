@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:economic": "pnpm --filter core exec vitest run src/economic/",
     "dev": "pnpm -r --parallel dev",
     "clean": "pnpm -r exec rm -rf dist"
   },
