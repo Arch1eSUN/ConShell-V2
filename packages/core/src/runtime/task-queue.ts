@@ -21,6 +21,8 @@ export interface QueuedTask<T = unknown> {
   execute: () => Promise<T>;
   retries?: number;
   priority?: number;
+  /** Optional commitment ID to enforce execution deduplication */
+  commitmentId?: string;
   /** Whether this task generates revenue (for economic routing) */
   isRevenueBearing?: boolean;
   /** Task type for cost estimation */
@@ -64,6 +66,8 @@ export class TaskQueue {
   private _memoryStore?: EconomicMemoryStore;
   private _lifecycleTracker?: ValueLifecycleTracker;
   private _rejectedCount = 0;
+  private _deduplicatedCount = 0;
+  private activeCommitments = new Set<string>();
 
   constructor(logger: Logger, opts?: TaskQueueOptions) {
     this.logger = logger.child('task-queue');
@@ -107,6 +111,17 @@ export class TaskQueue {
 
   /** 入队任务 — with economic routing + mode + feedback */
   enqueue<T>(task: QueuedTask<T>): boolean {
+    // 1. Deduplicate by commitmentId if provided
+    if (task.commitmentId && this.activeCommitments.has(task.commitmentId)) {
+      this._deduplicatedCount++;
+      this.logger.debug('Task rejected: deduplication by commitmentId', { id: task.id, name: task.name, commitmentId: task.commitmentId });
+      this.results.push({
+        id: task.id, name: task.name, success: false,
+        error: `Rejected: duplicated commitmentId (${task.commitmentId})`, attempts: 0, durationMs: 0,
+      });
+      return false;
+    }
+
     // RuntimeMode behavior contract (Round 15.9)
     if (this._economicService) {
       const snap = this._economicService.snapshot();
@@ -217,6 +232,10 @@ export class TaskQueue {
       );
     }
 
+    if (task.commitmentId) {
+      this.activeCommitments.add(task.commitmentId);
+    }
+
     this.queue.push(task as QueuedTask);
     this.queue.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
     this.logger.debug('Task enqueued', {
@@ -229,6 +248,11 @@ export class TaskQueue {
   /** Number of tasks rejected by economic routing */
   get rejectedCount(): number {
     return this._rejectedCount;
+  }
+
+  /** Number of tasks rejected by deduplication */
+  get deduplicatedCount(): number {
+    return this._deduplicatedCount;
   }
 
   /** 获取所有结果 */
@@ -257,6 +281,7 @@ export class TaskQueue {
   /** 清空队列 */
   clear(): void {
     this.queue = [];
+    this.activeCommitments.clear();
     this.logger.debug('Queue cleared');
   }
 
@@ -268,6 +293,9 @@ export class TaskQueue {
       this.running++;
       this.executeWithRetry(task).finally(() => {
         this.running--;
+        if (task.commitmentId) {
+          this.activeCommitments.delete(task.commitmentId);
+        }
         this.processNext();
       });
     }
@@ -324,6 +352,10 @@ export class TaskQueue {
 
   /** Round 15.9/16.0: Emit TaskCompletionEvent → Recorder + Heuristic + Memory + Lifecycle */
   private emitCompletionEvent(task: QueuedTask, success: boolean, _durationMs: number): void {
+    if (task.commitmentId) {
+      this.activeCommitments.delete(task.commitmentId);
+    }
+
     const event: TaskCompletionEvent = {
       type: 'task_completion',
       taskId: task.id,

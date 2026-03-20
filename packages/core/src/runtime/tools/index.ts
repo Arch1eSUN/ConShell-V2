@@ -6,6 +6,7 @@ export { shellTools, shellExecTool } from './shell.js';
 export { filesystemTools, fileReadTool, fileWriteTool, fileListTool } from './filesystem.js';
 export { httpTools, httpRequestTool } from './http.js';
 export { createMemoryTools } from './memory.js';
+export { createDiagnosticsTools } from './diagnostics.js';
 
 import { webTools } from './web.js';
 import { shellTools } from './shell.js';

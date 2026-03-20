@@ -21,7 +21,6 @@ import type { SoulSystem } from '../soul/system.js';
 import type { ConversationService } from '../channels/webchat/conversation-service.js';
 import type { SelfState } from '../identity/continuity-service.js';
 import type { SpendTracker } from '../spend/index.js';
-import type { PolicyDecision } from '../spend/governance-types.js';
 import type { EconomicStateService } from '../economic/economic-state-service.js';
 import { extractBehaviorGuidance, renderBehaviorGuidance } from './behavior-guidance.js';
 
@@ -215,34 +214,15 @@ export class AgentLoop {
       ];
     }
 
-    // 3. Round 15.5: Pre-loop governance check (structured PolicyDecision)
-    let effectiveMaxIterations = this.opts.maxIterations;
-    if (this._spendTracker) {
-      const decision = this._spendTracker.assessPressure(turnId, sid);
-      this.logger.info('Governance decision (pre-loop)', { level: decision.level, actions: decision.selectedActions, reasons: decision.reasonCodes });
 
-      if (decision.selectedActions.includes('block_inference')) {
-        const blockMsg = `[Economic Governance] ${decision.explanation}. Execution blocked to protect budget.`;
-        this.memory.pushHot(sid, 'assistant', blockMsg);
-        return blockMsg;
-      }
-      if (decision.maxIterationsCap !== null) {
-        effectiveMaxIterations = Math.min(effectiveMaxIterations, decision.maxIterationsCap);
-      }
-      if (decision.selectedActions.includes('inject_guidance') && messages[0]?.role === 'system') {
-        const tag = decision.level === 'degrade' ? 'ECONOMIC GOVERNANCE — HIGH PRESSURE' : 'ECONOMIC CAUTION';
-        messages[0] = { ...messages[0], content: messages[0].content + `\n\n[${tag}] ${decision.explanation}. ${decision.level === 'degrade' ? 'You MUST give the most concise answer possible. Avoid tool calls unless absolutely critical.' : 'Prefer efficient responses and minimize unnecessary tool calls.'}` };
-      }
-    }
-
-    // 4. ReAct 循环
+    // 3. ReAct 循环
     let iterations = 0;
     let finalResponse = '';
     const allToolCalls: ToolCallRequest[] = [];
     const allToolResults: string[] = [];
     let totalTokens = 0;
 
-    while (iterations < effectiveMaxIterations) {
+    while (iterations < this.opts.maxIterations) {
       iterations++;
 
       // Think: 调用LLM
@@ -283,17 +263,7 @@ export class AgentLoop {
         }
       }
 
-      // Round 15.5: Per-iteration governance re-check (structured)
-      if (this._spendTracker) {
-        const recheck = this._spendTracker.assessPressure(turnId, sid);
-        if (recheck.selectedActions.includes('block_inference')) {
-          this.logger.warn('Governance escalated to block mid-loop', { iteration: iterations, reasons: recheck.reasonCodes });
-          finalResponse = fullText || `[Economic Governance] ${recheck.explanation}. Further iterations blocked.`;
-          break;
-        }
-      }
 
-      // 如果没有tool_calls → 对话结束
       if (pendingToolCalls.length === 0) {
         finalResponse = fullText;
         break;
@@ -399,28 +369,10 @@ export class AgentLoop {
     const allToolResults: string[] = [];
     let totalTokens = 0;
 
-    // Round 15.5: Pre-loop governance check (stream, structured)
-    let effectiveMaxIterations = this.opts.maxIterations;
-    if (this._spendTracker) {
-      const decision = this._spendTracker.assessPressure(turnId, sid);
-      this.logger.info('Governance decision (stream pre-loop)', { level: decision.level, actions: decision.selectedActions });
 
-      if (decision.selectedActions.includes('block_inference')) {
-        const blockMsg = `[Economic Governance] ${decision.explanation}. Execution blocked to protect budget.`;
-        yield { type: 'text' as const, text: blockMsg };
-        return;
-      }
-      if (decision.maxIterationsCap !== null) {
-        effectiveMaxIterations = Math.min(effectiveMaxIterations, decision.maxIterationsCap);
-      }
-      if (decision.selectedActions.includes('inject_guidance') && messages[0]?.role === 'system') {
-        const tag = decision.level === 'degrade' ? 'ECONOMIC GOVERNANCE — HIGH PRESSURE' : 'ECONOMIC CAUTION';
-        messages[0] = { ...messages[0], content: messages[0].content + `\n\n[${tag}] ${decision.explanation}. ${decision.level === 'degrade' ? 'You MUST give the most concise answer possible.' : 'Prefer efficient responses.'}` };
-      }
-    }
 
     try {
-      while (iterations < effectiveMaxIterations) {
+      while (iterations < this.opts.maxIterations) {
         iterations++;
 
         let fullText = '';
@@ -462,16 +414,7 @@ export class AgentLoop {
           }
         }
 
-        // Round 15.5: Per-iteration governance re-check (stream, structured)
-        if (this._spendTracker) {
-          const recheck = this._spendTracker.assessPressure(turnId, sid);
-          if (recheck.selectedActions.includes('block_inference')) {
-            this.logger.warn('Governance escalated to block mid-loop (stream)', { iteration: iterations, reasons: recheck.reasonCodes });
-            finalResponse = fullText || `[Economic Governance] ${recheck.explanation}. Further iterations blocked.`;
-            yield { type: 'text' as const, text: `\n\n[Economic Governance] ${recheck.explanation}` };
-            break;
-          }
-        }
+
 
         if (pendingToolCalls.length === 0) {
           finalResponse = fullText;
