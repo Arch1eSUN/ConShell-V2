@@ -106,7 +106,6 @@ export type {
   AgentLifecycleState, LifecycleEvent, StateTransition,
   ToolHandler, ToolExecutorOptions,
   AgentLoopOptions, TurnRecord,
-  HeartbeatTask as RuntimeHeartbeatTask,
   QueuedTask, TaskResult, TaskQueueOptions,
 } from './runtime/index.js';
 

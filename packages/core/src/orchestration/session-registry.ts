@@ -1,4 +1,4 @@
-import { ChildSession } from './child-session';
+import { ChildSession } from './child-session.js';
 
 export class SessionRegistry {
     private sessions: ChildSession[] = [];

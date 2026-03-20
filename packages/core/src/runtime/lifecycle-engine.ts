@@ -1,4 +1,4 @@
-import { AgendaArbiter } from './agenda-arbiter';
+import { AgendaArbiter } from './agenda-arbiter.js';
 
 export class LifeCycleEngine {
     private running = false;

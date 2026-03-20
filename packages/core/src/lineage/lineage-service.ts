@@ -8,6 +8,7 @@
  */
 import type { MultiAgentManager, SpawnRequest } from '../multiagent/index.js';
 import type { InheritanceManifest } from '../identity/inheritance-boundary.js';
+import type { LineageGovernanceBridge } from './lineage-governance-bridge.js';
 import { getFieldsByPolicy } from '../identity/inheritance-boundary.js';
 import type {
   ChildRuntimeSpec,
@@ -23,8 +24,10 @@ import type {
   RecallPolicy,
 } from './lineage-contract.js';
 import { isValidChildTransition } from './lineage-contract.js';
+import { createDefaultScope } from './inheritance-scope.js';
 
 import type { Logger } from '../types/common.js';
+import type { EconomicStateService } from '../economic/economic-state-service.js';
 
 // Re-export all contract types
 export * from './lineage-contract.js';
@@ -35,8 +38,11 @@ export interface LineageServiceOptions {
   multiagent: MultiAgentManager;
   inheritanceManifest: InheritanceManifest;
   logger: Logger;
+  economicService?: EconomicStateService;
   /** Root agent identity fingerprint */
   rootFingerprint?: string;
+  /** Round 19.4: Governance bridge for lifecycle feedback */
+  governanceBridge?: LineageGovernanceBridge;
 }
 
 // ── LineageService ───────────────────────────────────────────────────
@@ -48,14 +54,23 @@ export class LineageService {
   private readonly multiagent: MultiAgentManager;
   private readonly manifest: InheritanceManifest;
   private readonly logger: Logger;
+  private readonly economicService?: EconomicStateService;
   private readonly rootFingerprint: string;
+  private governanceBridge?: LineageGovernanceBridge;
   private idCounter = 0;
 
   constructor(opts: LineageServiceOptions) {
     this.multiagent = opts.multiagent;
     this.manifest = opts.inheritanceManifest;
     this.logger = opts.logger;
+    this.economicService = opts.economicService;
     this.rootFingerprint = opts.rootFingerprint ?? 'root-genesis';
+    this.governanceBridge = opts.governanceBridge;
+  }
+
+  /** Round 19.4: Set bridge after construction (for late-binding) */
+  setGovernanceBridge(bridge: LineageGovernanceBridge): void {
+    this.governanceBridge = bridge;
   }
 
   // ── Child Lifecycle ──────────────────────────────────────────────
@@ -67,6 +82,14 @@ export class LineageService {
   async createChild(spec: ChildRuntimeSpec): Promise<LineageRecord> {
     const recordId = `lin_${Date.now()}_${++this.idCounter}`;
     const leaseId = `lease_${Date.now()}_${this.idCounter}`;
+
+    // 0. Round 18.6: Strict Lineage Viability Gating
+    if (this.economicService) {
+      const viability = this.economicService.evaluateLineageViability(spec.fundingCents);
+      if (!viability.viable) {
+        throw new Error(`Lineage viability gating failed: ${viability.reason}`);
+      }
+    }
 
     // Build identity summary from inheritance manifest
     const identitySummary = this.buildIdentitySummary(spec);
@@ -90,6 +113,7 @@ export class LineageService {
       status: 'planned',
       fundingLease,
       identitySummary,
+      inheritanceScope: createDefaultScope(),
       proposalId: spec.proposalId,
       createdAt: new Date().toISOString(),
     };
@@ -389,11 +413,17 @@ export class LineageService {
 
   // ── Internal ───────────────────────────────────────────────────────
 
-  private transition(record: LineageRecord, to: ChildRuntimeStatus): void {
+  private transition(record: LineageRecord, to: ChildRuntimeStatus, reason = '', actor = 'system'): void {
     if (!isValidChildTransition(record.status, to)) {
       throw new Error(`Invalid lineage transition: ${record.status} → ${to} (record: ${record.id})`);
     }
+    const previousStatus = record.status;
     record.status = to;
+
+    // Round 19.4: Emit lifecycle event through governance bridge
+    if (this.governanceBridge) {
+      this.governanceBridge.processLifecycleEvent(record, previousStatus, to, reason, actor);
+    }
   }
 
   private buildIdentitySummary(spec: ChildRuntimeSpec): ChildIdentitySummary {

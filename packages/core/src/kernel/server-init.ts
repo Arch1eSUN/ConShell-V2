@@ -45,6 +45,8 @@ export interface ServerInitDeps {
   reputation?: import('../collective/reputation-service.js').ReputationService;
   /** Optional: PeerSelector for delegation routes (Round 16.7) */
   selector?: import('../collective/peer-selector.js').PeerSelector;
+  /** Optional: AgentPostureService for posture routes (Round 19.3) */
+  postureService?: import('../api-surface/agent-posture-service.js').AgentPostureService;
 }
 
 export interface ServerInstances {
@@ -124,6 +126,24 @@ export async function initServer(deps: ServerInitDeps): Promise<ServerInstances>
       discovery: deps.discovery,
       reputation: deps.reputation,
       selector: deps.selector,
+    }, logger);
+  }
+
+  // ── Posture Routes (Round 19.3 — G6 Truth Surface) ────────────────
+  if (deps.postureService) {
+    const { registerPostureRoutes } = await import('../server/routes/posture.js');
+    registerPostureRoutes(httpServer, deps.postureService, logger);
+  }
+
+  // ── System Summary Route (Round 19.4 — Aggregated first-screen) ──
+  {
+    const { registerSystemSummaryRoutes } = await import('../server/routes/system-summary.js');
+    registerSystemSummaryRoutes(httpServer, {
+      stateMachine: deps.stateMachine,
+      postureService: deps.postureService,
+      economicService: (deps as any).economicService,
+      collectiveService: deps.collective,
+      governanceService: deps.governance,
     }, logger);
   }
 

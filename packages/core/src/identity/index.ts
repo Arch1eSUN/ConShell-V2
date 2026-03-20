@@ -64,7 +64,7 @@ export type {
 export {
   createGenesisRecord, rotateIdentity, revokeIdentity,
   recoverIdentity, resolveActive, validateRecordChain,
-  serializeRecords, restoreRecords, restoreRecordsHardened,
+  serializeRecords,
 } from './identity-lifecycle.js';
 export type { IdentityRecord, IdentityStatus, LifecycleTransitionResult, IdentityRecordSnapshot, RestoreResult } from './identity-lifecycle.js';
 

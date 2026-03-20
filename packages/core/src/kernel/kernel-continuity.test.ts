@@ -44,14 +44,14 @@ I am a test soul for kernel continuity wiring tests.
 function freshDb() {
   const agentHome = join(tmpdir(), `kernel-wiring-${randomUUID()}`);
   mkdirSync(agentHome, { recursive: true });
-  return openDatabase({ agentHome, logger: silentLogger });
+  return { db: openDatabase({ agentHome, logger: silentLogger }), agentHome };
 }
 
 /**
  * Creates a Kernel with real ContinuityService + DB injected,
  * but all other services stubbed to minimum viable mocks.
  */
-function wireKernel(db: ReturnType<typeof freshDb>, continuity: ContinuityService) {
+function wireKernel({ db, agentHome }: ReturnType<typeof freshDb>, continuity: ContinuityService) {
   const kernel = new Kernel();
 
   // Real memory tier manager for episode counting
@@ -89,11 +89,11 @@ function wireKernel(db: ReturnType<typeof freshDb>, continuity: ContinuityServic
 // ══════════════════════════════════════════════════════════════════════
 describe('Kernel.startSession() — session tracking', () => {
   it('increments sessionCount on each call', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
 
     expect(kernel.sessionCount).toBe(0);
 
@@ -105,11 +105,11 @@ describe('Kernel.startSession() — session tracking', () => {
   });
 
   it('records lastSessionId for checkpointTurn to use', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
     kernel.startSession('my-session-42');
 
     expect((kernel as any)._lastSessionId).toBe('my-session-42');
@@ -121,11 +121,11 @@ describe('Kernel.startSession() — session tracking', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('Kernel.checkpointTurn() — runtime wiring', () => {
   it('advances continuity chain when session state differs from latest record', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
 
     // Genesis record has sessionCount=0, advance to 1
     kernel.startSession('sess-1');
@@ -143,11 +143,11 @@ describe('Kernel.checkpointTurn() — runtime wiring', () => {
   });
 
   it('skips advance when no state change (session count matches)', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
 
     // Don't start any sessions — genesis record has sessionCount=0
     // and kernel._sessionCount is also 0
@@ -166,21 +166,21 @@ describe('Kernel.checkpointTurn() — runtime wiring', () => {
   });
 
   it('returns false when continuity not hydrated', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     // NOT hydrated — no call to hydrate()
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
     const result = kernel.checkpointTurn();
     expect(result).toBe(false);
   });
 
   it('uses explicit sessionId when provided', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
     kernel.startSession('implied-session');
 
     const advanced = kernel.checkpointTurn('explicit-override');
@@ -196,11 +196,11 @@ describe('Kernel.checkpointTurn() — runtime wiring', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('Kernel.shutdown() — continuity wiring', () => {
   it('calls checkpointTurn during shutdown', async () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
     kernel.startSession('shutdown-session');
 
     // Spy on checkpointTurn to verify it's called
@@ -213,11 +213,11 @@ describe('Kernel.shutdown() — continuity wiring', () => {
   });
 
   it('continuity is advanced before services are nulled', async () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
     kernel.startSession('pre-shutdown-session');
 
     expect(continuity.getCurrentState()!.chainLength).toBe(1); // genesis
@@ -226,7 +226,7 @@ describe('Kernel.shutdown() — continuity wiring', () => {
 
     // Continuity should have been advanced BEFORE services were nulled
     // We can verify by checking the DB directly (services are null now)
-    const verifyService = new ContinuityService(db, silentLogger);
+    const verifyService = new ContinuityService(db, silentLogger, agentHome);
     const restoredState = verifyService.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
     expect(restoredState.chainLength).toBe(2); // genesis + session advance
@@ -235,11 +235,11 @@ describe('Kernel.shutdown() — continuity wiring', () => {
   });
 
   it('running flag is false after shutdown', async () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
     expect(kernel.running).toBe(true);
 
     await kernel.shutdown();
@@ -252,11 +252,11 @@ describe('Kernel.shutdown() — continuity wiring', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('Kernel — multi-session lifecycle', () => {
   it('tracks continuity across multiple start + checkpoint cycles', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
 
     // Session 1
     kernel.startSession('sess-1');
@@ -283,11 +283,11 @@ describe('Kernel — multi-session lifecycle', () => {
   });
 
   it('second checkpoint without new session is a no-op', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'WiringTestAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({db, agentHome} as any, continuity);
 
     kernel.startSession('only-session');
     const advanced1 = kernel.checkpointTurn();

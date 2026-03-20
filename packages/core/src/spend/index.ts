@@ -13,7 +13,6 @@ import type { Cents } from '../types/common.js';
 import { Cents as toCents } from '../types/common.js';
 import type { SpendRepository } from '../state/repos/spend.js';
 import type { PolicyDecision, GovernanceOverride } from './governance-types.js';
-import { GovernanceEvaluator } from './governance-evaluator.js';
 import { evaluateScopes, DEFAULT_SCOPE_CONFIGS } from './budget-scope.js';
 import type { BudgetScopeConfig } from './budget-scope.js';
 
@@ -148,9 +147,7 @@ export class SpendTracker {
   private alertListeners = new Set<BudgetAlertListener>();
   private idCounter = 0;
   private repo: SpendRepository | null;
-  // Round 15.5: Governance Evaluator + Override
-  private _evaluator = new GovernanceEvaluator();
-  private _override: GovernanceOverride | null = null;
+
   private _scopeConfigs: BudgetScopeConfig[];
   private _recordListeners = new Set<(type: 'spend' | 'income', record: SpendRecord | IncomeRecord) => void>();
 
@@ -309,73 +306,6 @@ export class SpendTracker {
     return () => this._recordListeners.delete(listener);
   }
 
-  // ── Round 15.5: Economic Governance (Policy Layer) ─────────────────
-
-  /**
-   * Assess current spend pressure and return a structured PolicyDecision.
-   * Thin wrapper: delegates to GovernanceEvaluator with scope results.
-   * Runtime MUST consume the returned decision object.
-   *
-   * @param turnId - Current turn identifier for turn-scope filtering
-   * @param sessionId - Current session identifier for session-scope filtering
-   */
-  assessPressure(turnId?: string, sessionId?: string): PolicyDecision {
-    const scopeResults = evaluateScopes(this._scopeConfigs, {
-      records: this.spendRecords,
-      turnId,
-      sessionId,
-    });
-
-    return this._evaluator.evaluate({
-      scopeResults,
-      balanceCents: this.getBalance(),
-      balanceRemainingPct: this.getBudgetRemainingPct(),
-      override: this._override,
-    });
-  }
-
-  /**
-   * Legacy backward-compat wrapper (Round 15.4 shape).
-   * Use assessPressure() for the full PolicyDecision.
-   */
-  assessPressureLegacy(): GovernanceVerdict {
-    const decision = this.assessPressure();
-    const levelToAction: Record<string, GovernanceAction> = {
-      allow: 'allow', caution: 'caution', degrade: 'degrade', block: 'block',
-    };
-    const levelToPressure: Record<string, SpendPressure> = {
-      allow: 'low', caution: 'medium', degrade: 'high', block: 'critical',
-    };
-    const hourlyScope = decision.metricsSnapshot.scopeResults.find(s => s.scope === 'hourly');
-    const dailyScope = decision.metricsSnapshot.scopeResults.find(s => s.scope === 'daily');
-    return {
-      pressure: levelToPressure[decision.level] ?? 'low',
-      action: levelToAction[decision.level] ?? 'allow',
-      reason: decision.explanation,
-      hourlyUtilization: hourlyScope?.utilization ?? 0,
-      dailyUtilization: dailyScope?.utilization ?? 0,
-      balanceRemainingPct: decision.metricsSnapshot.balanceRemainingPct,
-      assessedAt: decision.decisionTimestamp,
-    };
-  }
-
-  /**
-   * Set a governance override (creator escape hatch).
-   * Override cannot bypass safety (balance=0).
-   */
-  setOverride(override: GovernanceOverride): void {
-    this._override = { ...override, bypassSafety: false };
-  }
-
-  /** Clear active override. */
-  clearOverride(): void {
-    this._override = null;
-  }
-
-  /** Get active override (for inspection/testing). */
-  getOverride(): GovernanceOverride | null {
-    return this._override;
-  }
 
   /** Get spend records (for scope evaluation and testing). */
   getSpendRecords(): ReadonlyArray<SpendRecord> {

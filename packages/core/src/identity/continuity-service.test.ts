@@ -35,10 +35,10 @@ const silentLogger = {
 } as any;
 
 // ── Helper: fresh in-memory DB with migrations applied ─────────────
-function freshDb(): Database.Database {
+function freshDb() {
   const agentHome = join(tmpdir(), `conshell-test-${randomUUID()}`);
   mkdirSync(agentHome, { recursive: true });
-  return openDatabase({ agentHome, logger: silentLogger });
+  return { db: openDatabase({ agentHome, logger: silentLogger }), agentHome };
 }
 
 const SOUL_CONTENT = `---
@@ -64,13 +64,16 @@ communication_style: direct
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Genesis', () => {
   let db: Database.Database;
+  let agentHome: string;
 
   beforeEach(() => {
-    db = freshDb();
+    const fresh = freshDb();
+    db = fresh.db;
+    agentHome = fresh.agentHome;
   });
 
   it('creates anchor + first record on fresh DB', () => {
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const state = svc.hydrate({
       soulContent: SOUL_CONTENT,
       soulName: 'TestAgent',
@@ -89,7 +92,7 @@ describe('ContinuityService — Genesis', () => {
   });
 
   it('persists anchor and record to DB', () => {
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({
       soulContent: SOUL_CONTENT,
       soulName: 'TestAgent',
@@ -103,7 +106,7 @@ describe('ContinuityService — Genesis', () => {
   });
 
   it('marks service as hydrated', () => {
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     expect(svc.hydrated).toBe(false);
     svc.hydrate({
       soulContent: SOUL_CONTENT,
@@ -119,10 +122,10 @@ describe('ContinuityService — Genesis', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Restart', () => {
   it('loads existing self and enters restart mode', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
     // First boot = genesis
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     const genesis = svc1.hydrate({
       soulContent: SOUL_CONTENT,
       soulName: 'TestAgent',
@@ -130,7 +133,7 @@ describe('ContinuityService — Restart', () => {
     expect(genesis.mode).toBe('genesis');
 
     // Second boot = restart (same DB, new service instance)
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const restart = svc2.hydrate({
       soulContent: SOUL_CONTENT,
       soulName: 'TestAgent',
@@ -144,12 +147,12 @@ describe('ContinuityService — Restart', () => {
   });
 
   it('does not create a new anchor on restart', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     svc1.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     svc2.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     const anchorRepo = new IdentityAnchorRepository(db);
@@ -162,8 +165,8 @@ describe('ContinuityService — Restart', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Soul Advance', () => {
   it('extends chain when soul changes', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     const newRecord = svc.advanceForSoulChange(SOUL_CONTENT_V2, 2);
@@ -179,8 +182,8 @@ describe('ContinuityService — Soul Advance', () => {
   });
 
   it('throws if not hydrated', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     expect(() => svc.advanceForSoulChange(SOUL_CONTENT, 1))
       .toThrow('ContinuityService not hydrated');
   });
@@ -191,8 +194,8 @@ describe('ContinuityService — Soul Advance', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Session Advance', () => {
   it('extends chain with session data', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     const sessionId = randomUUID();
@@ -210,8 +213,8 @@ describe('ContinuityService — Session Advance', () => {
   });
 
   it('chain remains valid after multiple advances', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     // Advance 5 times
@@ -228,7 +231,7 @@ describe('ContinuityService — Session Advance', () => {
     expect(state.latestRecord.version).toBe(6);
 
     // Verify the persisted chain is valid by re-hydrating
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const restart = svc2.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
     expect(restart.mode).toBe('restart');
     expect(restart.chainValid).toBe(true);
@@ -241,8 +244,8 @@ describe('ContinuityService — Session Advance', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Soul Lifecycle Integration', () => {
   it('onSoulEvolved callback triggers advance', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     // Simulate what kernel does: wire evolve callback
@@ -264,10 +267,10 @@ describe('ContinuityService — Soul Lifecycle Integration', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Degraded Mode', () => {
   it('enters degraded when chain is broken (tampered hash)', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
     // Create valid genesis state
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     const genesis = svc1.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     // Advance once
@@ -278,7 +281,7 @@ describe('ContinuityService — Degraded Mode', () => {
       .run('TAMPERED_HASH');
 
     // Re-hydrate should detect broken chain
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const degraded = svc2.hydrate({ soulContent: SOUL_CONTENT_V2, soulName: 'TestAgent' });
 
     expect(degraded.mode).toBe('degraded');
@@ -287,7 +290,7 @@ describe('ContinuityService — Degraded Mode', () => {
   });
 
   it('enters degraded when anchor exists but no records', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
     // Manually insert anchor without records
     const anchor = createIdentityAnchor({
@@ -298,7 +301,7 @@ describe('ContinuityService — Degraded Mode', () => {
     anchorRepo.insert(anchor);
 
     // Hydrate should detect missing records and create recovery record
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const state = svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     expect(state.mode).toBe('degraded');
@@ -314,8 +317,8 @@ describe('ContinuityService — Degraded Mode', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Lineage', () => {
   it('genesis agent has null parent and generation 0', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const state = svc.hydrate({
       soulContent: SOUL_CONTENT,
       soulName: 'TestAgent',
@@ -326,7 +329,7 @@ describe('ContinuityService — Lineage', () => {
   });
 
   it('manually created child anchor has parent reference and generation', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
     // Genesis parent
     const parentAnchor = createIdentityAnchor({
@@ -358,7 +361,7 @@ describe('ContinuityService — Lineage', () => {
   });
 
   it('lineage fields survive DB round-trip', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
     const anchorRepo = new IdentityAnchorRepository(db);
 
     const anchor = createIdentityAnchor({
@@ -382,8 +385,8 @@ describe('ContinuityService — Lineage', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — shouldAdvanceForSession', () => {
   it('returns true when sessionCount differs', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     // Genesis record has sessionCount=0 by default
@@ -391,8 +394,8 @@ describe('ContinuityService — shouldAdvanceForSession', () => {
   });
 
   it('returns false when sessionCount matches and no memoryEpisodeCount change', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     // Advance once with sessionCount=5
@@ -408,8 +411,8 @@ describe('ContinuityService — shouldAdvanceForSession', () => {
   });
 
   it('returns true when memoryEpisodeCount differs', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     svc.advanceForSession({
@@ -424,8 +427,8 @@ describe('ContinuityService — shouldAdvanceForSession', () => {
   });
 
   it('throws if not hydrated', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     expect(() => svc.shouldAdvanceForSession({ sessionCount: 1 }))
       .toThrow('ContinuityService not hydrated');
   });
@@ -436,28 +439,28 @@ describe('ContinuityService — shouldAdvanceForSession', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Soul Drift Detection', () => {
   it('soulDrifted is false when soul matches latest record', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
     // Genesis
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     svc1.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     // Restart with same soul
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const state = svc2.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     expect(state.soulDrifted).toBe(false);
   });
 
   it('soulDrifted is true when soul differs from latest record', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
     // Genesis with original soul
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     svc1.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     // Restart with changed soul (simulates external SOUL.md edit)
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const state = svc2.hydrate({ soulContent: SOUL_CONTENT_V2, soulName: 'TestAgent' });
 
     expect(state.soulDrifted).toBe(true);
@@ -466,8 +469,8 @@ describe('ContinuityService — Soul Drift Detection', () => {
   });
 
   it('genesis always has soulDrifted=false', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const state = svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     expect(state.mode).toBe('genesis');
@@ -480,8 +483,8 @@ describe('ContinuityService — Soul Drift Detection', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — SelfExplanation', () => {
   it('genesis has fresh-genesis explanation', () => {
-    const db = freshDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const state = svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     expect(state.explanation.continuityBasis).toBe('fresh-genesis');
@@ -491,12 +494,12 @@ describe('ContinuityService — SelfExplanation', () => {
   });
 
   it('valid restart has chain-valid explanation', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     svc1.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const state = svc2.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     expect(state.explanation.continuityBasis).toBe('chain-valid');
@@ -505,12 +508,12 @@ describe('ContinuityService — SelfExplanation', () => {
   });
 
   it('restart with soul drift has chain-valid + soulDrifted explanation', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     svc1.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const state = svc2.hydrate({ soulContent: SOUL_CONTENT_V2, soulName: 'TestAgent' });
 
     expect(state.explanation.continuityBasis).toBe('chain-valid');
@@ -519,9 +522,9 @@ describe('ContinuityService — SelfExplanation', () => {
   });
 
   it('degraded (tampered chain) has chain-broken explanation', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     svc1.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
     svc1.advanceForSoulChange(SOUL_CONTENT_V2, 2);
 
@@ -529,7 +532,7 @@ describe('ContinuityService — SelfExplanation', () => {
     db.prepare('UPDATE continuity_records SET record_hash = ? WHERE version = 1')
       .run('TAMPERED');
 
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const state = svc2.hydrate({ soulContent: SOUL_CONTENT_V2, soulName: 'TestAgent' });
 
     expect(state.explanation.continuityBasis).toBe('chain-broken-but-anchor-exists');
@@ -537,7 +540,7 @@ describe('ContinuityService — SelfExplanation', () => {
   });
 
   it('degraded (no records) has chain-broken explanation with recovery info', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
     const anchor = createIdentityAnchor({
       name: 'TestAgent',
@@ -546,7 +549,7 @@ describe('ContinuityService — SelfExplanation', () => {
     const anchorRepo = new IdentityAnchorRepository(db);
     anchorRepo.insert(anchor);
 
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const state = svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     expect(state.explanation.continuityBasis).toBe('chain-broken-but-anchor-exists');
@@ -559,14 +562,14 @@ describe('ContinuityService — SelfExplanation', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('ContinuityService — Post-Advance Consistency', () => {
   it('advanceForSoulChange resets soulDrifted to false', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
     // Genesis
-    const svc1 = new ContinuityService(db, silentLogger);
+    const svc1 = new ContinuityService(db, silentLogger, agentHome);
     svc1.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     // Restart with drifted soul
-    const svc2 = new ContinuityService(db, silentLogger);
+    const svc2 = new ContinuityService(db, silentLogger, agentHome);
     const stateBeforeAdvance = svc2.hydrate({ soulContent: SOUL_CONTENT_V2, soulName: 'TestAgent' });
     expect(stateBeforeAdvance.soulDrifted).toBe(true);
 
@@ -580,9 +583,9 @@ describe('ContinuityService — Post-Advance Consistency', () => {
   });
 
   it('advanceForSession refreshes explanation with updated chain length', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     const stateBefore = svc.getCurrentState()!;
@@ -604,9 +607,9 @@ describe('ContinuityService — Post-Advance Consistency', () => {
   });
 
   it('advanceForSoulChange with matching content keeps soulDrifted false', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
 
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const state = svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
     expect(state.soulDrifted).toBe(false);
 

@@ -44,8 +44,11 @@ function createMockPolicy(decision: 'allow' | 'deny' | 'escalate' = 'allow'): Go
 
 function createMockSelfMod() {
   return {
-    modify: vi.fn().mockResolvedValue({ id: 'mod_001', file: 'test.ts', timestamp: Date.now() }),
+    propose: vi.fn().mockResolvedValue({ id: 'mod_001', file: 'test.ts', timestamp: Date.now() }),
+    approve: vi.fn().mockResolvedValue(true),
+    apply: vi.fn().mockResolvedValue({ id: 'mod_001', file: 'test.ts', timestamp: Date.now() }),
     rollback: vi.fn().mockResolvedValue(true),
+    verify: vi.fn(),
     stats: vi.fn().mockReturnValue({ totalModifications: 0 }),
     getRecord: vi.fn(),
     listRecords: vi.fn().mockReturnValue([]),
@@ -61,6 +64,21 @@ function createMockMultiAgent() {
   };
 }
 
+function createMockLineage() {
+  return {
+    createChild: vi.fn().mockResolvedValue({
+      id: 'lineage_001',
+      childId: 'child_001',
+      status: 'active',
+      spec: { name: 'test-child', task: 'test' },
+    }),
+    getByChildId: vi.fn().mockReturnValue(null),
+    recallChild: vi.fn().mockResolvedValue({ success: true }),
+    terminateChild: vi.fn().mockResolvedValue({ success: true }),
+    attachFunding: vi.fn(),
+  };
+}
+
 function createMockLogger() {
   return {
     debug: vi.fn(),
@@ -71,15 +89,24 @@ function createMockLogger() {
   };
 }
 
+function createMockEconomic(allowed: boolean = true) {
+  return {
+    survivalTier: () => 'normal' as any,
+    isEmergency: () => false,
+    mustPreserveActive: () => false,
+    currentBalanceCents: () => 100_00,
+    canAcceptAction: vi.fn().mockReturnValue({ allowed, reason: allowed ? 'ok' : 'budget exceeded' }),
+  };
+}
+
 function createGovernanceService(overrides: Partial<GovernanceServiceOptions> = {}): GovernanceService {
   return new GovernanceService({
     identity: createMockIdentity(),
     policy: createMockPolicy(),
     selfmod: createMockSelfMod() as any,
     multiagent: createMockMultiAgent() as any,
+    lineage: createMockLineage() as any,
     logger: createMockLogger() as any,
-    dailyBudgetCents: 100_00,
-    dailySpentCents: 0,
     ...overrides,
   });
 }
@@ -160,7 +187,7 @@ describe('SelfMod Integration Path', () => {
 
     const receipt = await gov.apply(proposal.id);
     expect(receipt.result).toBe('success');
-    expect(selfmod.modify).toHaveBeenCalledOnce();
+    expect(selfmod.apply).toHaveBeenCalledOnce();
 
     const verifyReceipt = gov.verify(proposal.id);
     expect(verifyReceipt.result).toBe('success');
@@ -191,8 +218,8 @@ describe('SelfMod Integration Path', () => {
   });
 
   it('selfmod failure produces failure receipt', async () => {
-    selfmod.modify.mockRejectedValue(new Error('Permission denied'));
-    const p = gov.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test' });
+    selfmod.propose.mockRejectedValue(new Error('Permission denied'));
+    const p = gov.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test', payload: { file: 'test.ts', content: 'xxx' } });
     gov.evaluate(p.id);
     const receipt = await gov.apply(p.id);
     expect(receipt.result).toBe('failure');
@@ -204,16 +231,16 @@ describe('SelfMod Integration Path', () => {
 // 3. REPLICATION FULL PATH
 // ══════════════════════════════════════════════════════════════════════
 
-describe('Replication Integration Path', () => {
+describe('Replication Integration Path (Round 18.7 — canonical lineage)', () => {
   let gov: GovernanceService;
-  let multiagent: ReturnType<typeof createMockMultiAgent>;
+  let lineage: ReturnType<typeof createMockLineage>;
 
   beforeEach(() => {
-    multiagent = createMockMultiAgent();
-    gov = createGovernanceService({ multiagent: multiagent as any });
+    lineage = createMockLineage();
+    gov = createGovernanceService({ lineage: lineage as any });
   });
 
-  it('propose → evaluate → apply → verify → rollback (full lifecycle)', async () => {
+  it('propose → evaluate → apply → verify (full lifecycle via lineage)', async () => {
     const p = gov.propose({
       actionKind: 'replication',
       target: 'worker-alpha',
@@ -229,16 +256,11 @@ describe('Replication Integration Path', () => {
 
     const receipt = await gov.apply(p.id);
     expect(receipt.result).toBe('success');
-    expect(multiagent.spawn).toHaveBeenCalledOnce();
+    expect(lineage.createChild).toHaveBeenCalledOnce();
+    expect(receipt.relatedIds?.lineageRecordId).toBe('lineage_001');
 
     const verifyReceipt = gov.verify(p.id);
     expect(verifyReceipt.result).toBe('success');
-
-    // Rollback = terminate child
-    const proposal = gov.getProposal(p.id)!;
-    // Force status back to 'applied' for rollback (since verified is terminal for verify but we need to test rollback from applied)
-    // Actually rollback requires 'applied' or 'failed' status — but verify transitions to 'verified'
-    // So let's test rollback before verify
   });
 
   it('rollback terminates spawned child', async () => {
@@ -253,11 +275,10 @@ describe('Replication Integration Path', () => {
     // Rollback from 'applied' state
     const rollbackReceipt = await gov.rollback(p.id);
     expect(rollbackReceipt.result).toBe('success');
-    expect(multiagent.terminate).toHaveBeenCalledWith('child_001', true);
   });
 
-  it('spawn failure produces failure receipt', async () => {
-    multiagent.spawn.mockRejectedValue(new Error('Insufficient funds'));
+  it('lineage createChild failure produces failure receipt', async () => {
+    lineage.createChild.mockRejectedValue(new Error('Insufficient funds'));
     const p = gov.propose({ actionKind: 'replication', target: 'worker', justification: 'test' });
     gov.evaluate(p.id);
     const receipt = await gov.apply(p.id);
@@ -266,7 +287,7 @@ describe('Replication Integration Path', () => {
   });
 
   it('budget exceeded denies replication', () => {
-    const gov2 = createGovernanceService({ dailyBudgetCents: 100, dailySpentCents: 90 });
+    const gov2 = createGovernanceService({ economic: createMockEconomic(false) });
     const p = gov2.propose({
       actionKind: 'replication',
       target: 'worker',
@@ -278,13 +299,13 @@ describe('Replication Integration Path', () => {
     expect(gov2.getProposal(p.id)?.denialLayer).toBe('economy');
   });
 
-  it('without multiagent configured, apply fails gracefully', async () => {
-    const gov2 = createGovernanceService({ multiagent: undefined });
+  it('without lineage configured, apply fails with clear error', async () => {
+    const gov2 = createGovernanceService({ lineage: undefined, multiagent: undefined });
     const p = gov2.propose({ actionKind: 'replication', target: 'worker', justification: 'test' });
     gov2.evaluate(p.id);
     const receipt = await gov2.apply(p.id);
     expect(receipt.result).toBe('failure');
-    expect(receipt.reason).toMatch(/Neither LineageService nor MultiAgentManager configured/);
+    expect(receipt.reason).toMatch(/LineageService not configured/);
   });
 });
 

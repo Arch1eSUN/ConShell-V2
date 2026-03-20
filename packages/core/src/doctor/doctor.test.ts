@@ -525,7 +525,7 @@ import { randomUUID } from 'node:crypto';
 function freshDoctorDb() {
   const agentHome = join(tmpdir(), `conshell-doctor-test-${randomUUID()}`);
   mkdirSync(agentHome, { recursive: true });
-  return openDatabase({ agentHome, logger: silentLogger });
+  return { db: openDatabase({ agentHome, logger: silentLogger }), agentHome };
 }
 
 const DOCTOR_SOUL = '# Doctor Test Soul\n\nI am a test soul for doctor checks.';
@@ -540,8 +540,8 @@ const silentLogger = {
 
 describe('Doctor — Self-Model Unification (Round 14.8.1)', () => {
   it('passes runtime-self-state-consistent when runtime matches DB', () => {
-    const db = freshDoctorDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDoctorDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const selfState = svc.hydrate({ soulContent: DOCTOR_SOUL, soulName: 'DoctorTest' });
 
     const results = checkIdentityCoherence(db, DOCTOR_SOUL, selfState);
@@ -553,8 +553,8 @@ describe('Doctor — Self-Model Unification (Round 14.8.1)', () => {
   });
 
   it('fails runtime-self-state-consistent when chainLength diverges', () => {
-    const db = freshDoctorDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDoctorDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const selfState = svc.hydrate({ soulContent: DOCTOR_SOUL, soulName: 'DoctorTest' });
 
     // Artificially tamper with chainLength to simulate divergence
@@ -570,8 +570,8 @@ describe('Doctor — Self-Model Unification (Round 14.8.1)', () => {
   });
 
   it('backward compat: no selfState means no runtime-self-state check', () => {
-    const db = freshDoctorDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDoctorDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: DOCTOR_SOUL, soulName: 'DoctorTest' });
 
     // Call without selfState — should still work, just no selfState check
@@ -585,8 +585,8 @@ describe('Doctor — Self-Model Unification (Round 14.8.1)', () => {
   });
 
   it('detects soulDrifted mismatch between runtime and actual', () => {
-    const db = freshDoctorDb();
-    const svc = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDoctorDb();
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     const selfState = svc.hydrate({ soulContent: DOCTOR_SOUL, soulName: 'DoctorTest' });
 
     // Runtime says not drifted, but we pass different soul content

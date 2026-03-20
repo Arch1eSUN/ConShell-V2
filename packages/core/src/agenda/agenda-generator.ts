@@ -103,10 +103,16 @@ const WEIGHT_PROFILES: Record<RuntimeMode, WeightProfile> = {
 export class AgendaGenerator {
   private memoryStore?: EconomicMemoryStore;
   private profitabilityEvaluator: ProfitabilityEvaluator;
+  private systemCoupling?: import('../economic/settlement-system-coupling.js').SettlementSystemCoupling;
 
-  constructor(memoryStore?: EconomicMemoryStore, profitabilityEvaluator?: ProfitabilityEvaluator) {
+  constructor(
+    memoryStore?: EconomicMemoryStore,
+    profitabilityEvaluator?: ProfitabilityEvaluator,
+    systemCoupling?: import('../economic/settlement-system-coupling.js').SettlementSystemCoupling
+  ) {
     this.memoryStore = memoryStore;
-    this.profitabilityEvaluator = profitabilityEvaluator ?? new ProfitabilityEvaluator();
+    this.systemCoupling = systemCoupling;
+    this.profitabilityEvaluator = profitabilityEvaluator ?? new ProfitabilityEvaluator(undefined, systemCoupling);
   }
 
   setMemoryStore(store: EconomicMemoryStore): void {
@@ -114,7 +120,19 @@ export class AgendaGenerator {
   }
 
   generate(input: AgendaInput): AgendaResult {
-    const { commitments, mode, tier, maxItems = 3 } = input;
+    const { commitments, tier, maxItems = 3 } = input;
+    let mode = input.mode;
+    
+    // Dynamic mode alteration via orchestrator signals
+    if (this.systemCoupling) {
+      const truth = this.systemCoupling.getSystemTruth();
+      if (truth.systemHealthIndicator === 'critical' && mode !== 'shutdown') {
+        mode = 'survival-recovery';
+      } else if (truth.systemHealthIndicator === 'under_pressure' && mode === 'normal') {
+        mode = 'revenue-seeking';
+      }
+    }
+
     const now = new Date().toISOString();
 
     // Shutdown mode: defer everything
@@ -261,6 +279,12 @@ export class AgendaGenerator {
   ): { score: number; reasons: string[] } {
     const reasons: string[] = [];
     let score = 0;
+
+    // 0. Round 18.6: Cross-restart mission checkpoints get a massive boost
+    if (c.recoveredFromCrash) {
+      score += 200;
+      reasons.push('CRITICAL: Cross-restart mission continuity recovered from crash (+200)');
+    }
 
     // 1. Economic value factor
     const economicScore = this.computeEconomicScore(c);

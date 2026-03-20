@@ -5,7 +5,7 @@
  * V2:  governance test suite passes (0 regressions)
  * V3:  proposal_invalid vs deny vs execution_failure 三分明确
  * V4:  initiation receipt semantics correct
- * V5:  restoreRecords rejects invalid snapshot
+ * V5:  restoreRecordsHardened rejects invalid snapshot
  * V6:  chain integrity detects broken chain
  * V7:  revoked identity → claims immediately invalidated
  * V8:  rotated identity → capability inherit + service revoke
@@ -17,7 +17,7 @@ import { GovernanceService, type GovernanceServiceOptions } from '../governance/
 import { isExecutableVerdict } from '../governance/governance-verdict.js';
 import { ClaimRegistry, ClaimIssuer } from '../identity/identity-claims.js';
 import {
-  createGenesisRecord, restoreRecords,
+  createGenesisRecord,
   restoreRecordsHardened, serializeRecords,
   rotateIdentity, revokeIdentity,
   type IdentityRecord,
@@ -140,13 +140,13 @@ describe('V4: initiation receipt', () => {
 // V5: RESTORE RECORDS REJECTS INVALID SNAPSHOT
 // ══════════════════════════════════════════════════════════════════════
 
-describe('V5: restoreRecords rejects invalid', () => {
+  describe('V5: restoreRecordsHardened rejects invalid', () => {
   it('null snapshot returns null', () => {
-    expect(restoreRecords(null)).toBeNull();
+    expect(restoreRecordsHardened(null).valid).toBe(false);
   });
 
   it('wrong version returns null', () => {
-    expect(restoreRecords({ version: 99, records: [] })).toBeNull();
+    expect(restoreRecordsHardened({ version: 99, records: [] }).valid).toBe(false);
   });
 
   it('missing required fields returns null', () => {
@@ -154,7 +154,7 @@ describe('V5: restoreRecords rejects invalid', () => {
       version: 1,
       records: [{ id: 'x', version: 1 }], // missing status, anchorId etc
     };
-    expect(restoreRecords(snapshot)).toBeNull();
+    expect(restoreRecordsHardened(snapshot).valid).toBe(false);
   });
 
   it('invalid status returns null', () => {
@@ -162,7 +162,7 @@ describe('V5: restoreRecords rejects invalid', () => {
       version: 1,
       records: [makeRecord({ status: 'garbage' as any })],
     };
-    expect(restoreRecords(snapshot)).toBeNull();
+    expect(restoreRecordsHardened(snapshot).valid).toBe(false);
   });
 });
 

@@ -24,11 +24,11 @@ import type { SelfModManager, ModificationRecord } from '../selfmod/index.js';
 import type { MultiAgentManager, SpawnRequest, ChildAgent } from '../multiagent/index.js';
 import type { LineageService, ChildRuntimeSpec } from '../lineage/index.js';
 import type { CollectiveService } from '../collective/index.js';
+import type { GovernedSelfModGate } from '../selfmod/governed-selfmod-gate.js';
 import type { SovereignIdentityStatus } from '../identity/sovereign-identity-contract.js';
 import {
   type GovernanceActionKind,
   type GovernanceRiskLevel,
-  type GovernanceDecision, // @deprecated Round 17.1 — consume GovernanceVerdict only
   type GovernanceDenialLayer,
   type GovernanceStatus,
   type GovernanceProposal,
@@ -56,12 +56,12 @@ import { NullEconomicProvider } from './governance-economic-provider.js';
 import type { DelegationScope } from './delegation-scope.js';
 import { createDelegationScope } from './delegation-scope.js';
 import { DELEGATION_BLOCKED_STATUSES } from '../collective/collective-contract.js';
+import type { LineageBranchControl } from '../lineage/branch-control.js';
 
 // Re-export contract types
 export type {
   GovernanceActionKind,
   GovernanceRiskLevel,
-  GovernanceDecision,
   GovernanceDenialLayer,
   GovernanceStatus,
   GovernanceProposal,
@@ -104,15 +104,16 @@ export interface GovernanceServiceOptions {
   lineage?: LineageService;
   /** Collective service (optional — peer registry, Round 16.6) */
   collective?: CollectiveService;
+  /** Branch control (optional — quarantine/revoke lineage branches, Round 18.7) */
+  branchControl?: LineageBranchControl;
   /** Round 17.0: Economic/survival provider */
   economic?: GovernanceEconomicProvider;
+  /** Round 19.3: GovernedSelfModGate for lifecycle control */
+  selfModGate?: GovernedSelfModGate;
   /** Logger */
   logger: Logger;
   /** Default actor origin */
   defaultOrigin?: GovernanceActor['origin'];
-  /** Economic context (legacy — use economic provider instead) */
-  dailyBudgetCents?: number;
-  dailySpentCents?: number;
 }
 
 // ── GovernanceService ──────────────────────────────────────────────────
@@ -130,25 +131,25 @@ export class GovernanceService {
   private multiagent?: MultiAgentManager;
   private lineage?: LineageService;
   private collective?: CollectiveService;
+  private branchControl?: LineageBranchControl;
+  private selfModGate?: GovernedSelfModGate;
   private logger: Logger;
   private defaultOrigin: GovernanceActor['origin'];
-  private dailyBudgetCents: number;
-  private dailySpentCents: number;
   private idCounter = 0;
   private verdictCounter = 0;
 
   constructor(opts: GovernanceServiceOptions) {
     this.identity = opts.identity;
     this.policy = opts.policy;
-    this.economic = opts.economic ?? this.buildLegacyEconomicProvider(opts);
+    this.economic = opts.economic ?? new NullEconomicProvider();
     this.selfmod = opts.selfmod;
     this.multiagent = opts.multiagent;
     this.lineage = opts.lineage;
     this.collective = opts.collective;
+    this.branchControl = opts.branchControl;
+    this.selfModGate = opts.selfModGate;
     this.logger = opts.logger;
     this.defaultOrigin = opts.defaultOrigin ?? 'self';
-    this.dailyBudgetCents = opts.dailyBudgetCents ?? 100_00;
-    this.dailySpentCents = opts.dailySpentCents ?? 0;
   }
 
   // ── Core Workflow ───────────────────────────────────────────────────
@@ -247,8 +248,8 @@ export class GovernanceService {
       action: proposal.actionKind,
       costCents: proposal.expectedCostCents,
       securityLevel: 'standard' as any,
-      dailyBudgetCents: this.dailyBudgetCents,
-      dailySpentCents: this.dailySpentCents,
+      dailyBudgetCents: 0,
+      dailySpentCents: 0,
       constitutionAccepted: true,
       identityStatus: idStatus,
       callerAuthority: proposal.initiator.origin === 'creator' ? 'creator' : 'self',
@@ -402,7 +403,17 @@ export class GovernanceService {
           if (!this.selfmod) throw new Error('SelfModManager not configured');
           const file = proposal.payload?.['file'] as string ?? proposal.target;
           const content = proposal.payload?.['content'] as string ?? '';
-          const record = await this.selfmod.modify(file, content, proposal.justification);
+          const proposed = await this.selfmod.propose(file, content, proposal.justification);
+          this.selfmod.approve(proposed.id);
+          const record = await this.selfmod.apply(proposed.id);
+          // Round 18.7: Auto-verify after apply — rollback on failure
+          try {
+            this.selfmod.verify(record.id);
+          } catch (verifyErr) {
+            this.logger.warn('SelfMod verify failed, rolling back', { id: record.id, error: String(verifyErr) });
+            await this.selfmod.rollback(record.id);
+            throw new Error(`SelfMod verify failed: ${verifyErr instanceof Error ? verifyErr.message : String(verifyErr)}`);
+          }
           relatedIds = { modRecordId: record.id };
           break;
         }
@@ -423,18 +434,10 @@ export class GovernanceService {
             if (this.collective && record.status === 'active') {
               this.collective.registerPeerFromChild(record);
             }
-          } else if (this.multiagent) {
-            // Legacy fallback
-            const spawnReq: SpawnRequest = {
-              name: proposal.payload?.['name'] as string ?? proposal.target,
-              task: proposal.payload?.['task'] as string ?? proposal.justification,
-              genesisPrompt: proposal.payload?.['genesisPrompt'] as string ?? '',
-              fundCents: proposal.expectedCostCents,
-            };
-            const child = await this.multiagent.spawn(spawnReq);
-            relatedIds = { childId: child.id };
           } else {
-            throw new Error('Neither LineageService nor MultiAgentManager configured');
+            // Round 18.7: Legacy multiagent.spawn fallback removed.
+            // All replication MUST go through LineageService for full governance chain.
+            throw new Error('LineageService not configured — replication requires canonical lineage path');
           }
           break;
         }
@@ -497,6 +500,50 @@ export class GovernanceService {
               delegatedPeerId: delPayload.targetPeerId,
               delegationScopeId: scope.delegationId,
             };
+          }
+          break;
+        }
+        case 'quarantine_branch':
+        case 'revoke_branch': {
+          // Round 18.7: Governance-controlled branch lifecycle via BranchControl
+          if (!this.branchControl) throw new Error('BranchControl not configured — branch operations require LineageBranchControl');
+          const targetRecordId = proposal.payload?.['recordId'] as string ?? proposal.target;
+          const reason = proposal.justification;
+          const bcVerdict = this.verdicts.get(proposalId);
+          if (proposal.actionKind === 'quarantine_branch') {
+            const bcReceipt = this.branchControl.quarantineBranch(targetRecordId, reason, bcVerdict?.id);
+            relatedIds = { branchControlReceiptId: bcReceipt.timestamp, lineageRecordId: targetRecordId };
+          } else {
+            const bcReceipt = this.branchControl.revokeBranch(targetRecordId, reason, bcVerdict?.id);
+            relatedIds = { branchControlReceiptId: bcReceipt.timestamp, lineageRecordId: targetRecordId };
+          }
+          break;
+        }
+        case 'restore_branch': {
+          // Round 19.3: Governance-controlled branch restoration
+          if (!this.branchControl) throw new Error('BranchControl not configured — restore requires LineageBranchControl');
+          const restoreRecordId = proposal.payload?.['recordId'] as string ?? proposal.target;
+          const restoreVerdict = this.verdicts.get(proposalId);
+          const restoreReceipt = this.branchControl.restoreBranch(
+            restoreRecordId,
+            proposal.justification,
+            restoreVerdict?.id,
+          );
+          relatedIds = { branchControlReceiptId: restoreReceipt.timestamp, lineageRecordId: restoreRecordId };
+          break;
+        }
+        case 'pause_selfmod': {
+          // Round 19.3: Governed self-modification lifecycle
+          if (this.selfModGate) {
+            this.selfModGate.pause();
+            this.logger.info('GovernedSelfModGate PAUSED via governance action');
+          }
+          break;
+        }
+        case 'resume_selfmod': {
+          if (this.selfModGate) {
+            this.selfModGate.resume();
+            this.logger.info('GovernedSelfModGate RESUMED via governance action');
           }
           break;
         }
@@ -685,6 +732,36 @@ export class GovernanceService {
     return this.verdicts.get(proposalId);
   }
 
+  /** Round 20.0: What-If Projection */
+  whatIf(proposalId: string): any {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) throw new Error(`Proposal not found: ${proposalId}`);
+
+    // Generate a trial verdict without mutating
+    const survivalContext = this.captureSurvivalContext();
+    const currentBalance = this.economic.currentBalanceCents();
+    const newBalance = currentBalance - proposal.expectedCostCents;
+    
+    // Very primitive projection model
+    const resultingTier = newBalance < 1000 ? 'critical' : (survivalContext?.survivalTier ?? 'normal');
+    
+    let blockedOps = [];
+    if (proposal.actionKind === 'replication') {
+      blockedOps.push(`Locks ${proposal.expectedCostCents}¢ reserve tokens`);
+      blockedOps.push('May delay background indexing due to concurrent operations limit');
+    }
+
+    return {
+      proposalId,
+      budgetImpactCents: -proposal.expectedCostCents,
+      expectedRoiCents: 0, // In full implementation, pulled from proposal payload
+      resultingBalanceCents: newBalance,
+      resultingSurvivalTier: resultingTier,
+      blockedWarnings: blockedOps,
+      timestamp: new Date().toISOString()
+    };
+  }
+
   /** Round 17.0: Get all verdicts */
   allVerdicts(): readonly GovernanceVerdict[] {
     return Array.from(this.verdicts.values());
@@ -772,77 +849,9 @@ export class GovernanceService {
 
   // ── Private Helpers ─────────────────────────────────────────────────
 
-  /**
-   * Build a budget-aware economic provider from legacy dailyBudgetCents/dailySpentCents
-   * options, or fall back to NullEconomicProvider when neither is set.
-   */
-  private buildLegacyEconomicProvider(opts: GovernanceServiceOptions): GovernanceEconomicProvider {
-    const budget = opts.dailyBudgetCents;
-    const spent = opts.dailySpentCents;
-    if (budget === undefined && spent === undefined) {
-      return new NullEconomicProvider();
-    }
-    const b = budget ?? 100_00;
-    const s = spent ?? 0;
-    return {
-      survivalTier: () => 'normal' as any,
-      isEmergency: () => false,
-      mustPreserveActive: () => false,
-      currentBalanceCents: () => b - s,
-      canAcceptAction: (costCents: number) => {
-        const remaining = b - s;
-        if (costCents > remaining) {
-          return { allowed: false, reason: `Budget exceeded: cost ${costCents} > remaining ${remaining}` };
-        }
-        return { allowed: true, reason: 'Within budget' };
-      },
-    };
-  }
 
-  /**
-   * @deprecated Round 17.1 — Dead code. forceApprove/forceDeny now use buildVerdict().
-   * Retained for reference until 17.2 cleanup.
-   */
-  private approveProposal(proposal: GovernanceProposal): GovernanceDecision {
-    proposal.status = 'approved';
-    proposal.decision = 'auto_approved';
-    proposal.decidedAt = new Date().toISOString();
-    this.createReceipt(proposal, 'decision', 'success', 'Auto-approved by governance evaluation chain');
-    this.logger.info('Proposal auto-approved', { id: proposal.id });
-    return 'auto_approved';
-  }
 
-  /**
-   * @deprecated Round 17.1 — Dead code. Use buildVerdict() instead.
-   * Retained for reference until 17.2 cleanup.
-   */
-  private denyProposal(
-    proposal: GovernanceProposal,
-    layer: GovernanceDenialLayer,
-    reason: string,
-  ): GovernanceDecision {
-    proposal.status = 'denied';
-    proposal.decision = 'denied';
-    proposal.denialLayer = layer;
-    proposal.denialReason = reason;
-    proposal.decidedAt = new Date().toISOString();
-    this.createReceipt(proposal, 'decision', 'failure', `Denied by ${layer}: ${reason}`);
-    this.logger.warn('Proposal denied', { id: proposal.id, layer, reason });
-    return 'denied';
-  }
 
-  /**
-   * @deprecated Round 17.1 — Dead code. Use buildVerdict() instead.
-   * Retained for reference until 17.2 cleanup.
-   */
-  private escalateProposal(proposal: GovernanceProposal, reason: string): GovernanceDecision {
-    proposal.status = 'escalated';
-    proposal.decision = 'escalated';
-    proposal.decidedAt = new Date().toISOString();
-    this.createReceipt(proposal, 'decision', 'success', `Escalated: ${reason}`);
-    this.logger.info('Proposal escalated', { id: proposal.id, reason });
-    return 'escalated';
-  }
 
   private createReceipt(
     proposal: GovernanceProposal,
@@ -892,14 +901,7 @@ export class GovernanceService {
   ): GovernanceVerdict {
     const verdictId = `vrd_${Date.now()}_${++this.verdictCounter}`;
 
-    // Map verdict code to legacy GovernanceDecision for backward compat
-    const legacyDecision: GovernanceDecision =
-      code === 'deny' ? 'denied' :
-      code === 'require_review' ? 'escalated' :
-      'auto_approved';
-
     // Update proposal state
-    proposal.decision = legacyDecision;
     proposal.decidedAt = new Date().toISOString();
     if (code === 'deny') {
       proposal.status = 'denied';

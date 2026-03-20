@@ -222,3 +222,183 @@ export function createEconomicKernel(): EconomicKernel {
     transactionSafety: new TransactionSafetyManager(),
   });
 }
+
+// ── Round 17.7: Economic Kernel Foundation ────────────────────────────
+
+// G1: Economic Identity
+export type {
+  EconomicIdentity,
+  EconomicIdentityStatus,
+  EconomicIdentityCreateInput,
+} from './economic-identity.js';
+export {
+  EconomicIdentityRegistry,
+} from './economic-identity.js';
+
+// G2: Economic Action Classification
+export type {
+  EconomicActionKind,
+  EconomicRiskLevel,
+  ActionSource,
+  CandidateEconomicAction,
+  ActionClassification,
+} from './economic-action-classification.js';
+export {
+  ACTION_RISK_DEFAULTS,
+  EXTERNAL_SOURCES,
+  classifyAction,
+  createCandidate,
+} from './economic-action-classification.js';
+
+// G3: Capability Envelope
+export type {
+  CapabilityScope,
+  CapabilityEnvelope,
+  CapabilityChangeEvent,
+} from './capability-envelope.js';
+export {
+  ALL_CAPABILITY_SCOPES,
+  CapabilityEnvelopeManager,
+} from './capability-envelope.js';
+
+// G4: Mandate Engine
+export type {
+  Mandate,
+  MandateStatus,
+  MandateCreateInput,
+  MandateMatchResult,
+} from './mandate-engine.js';
+export {
+  MandateEngine,
+} from './mandate-engine.js';
+
+// G5: Economic Instruction Firewall
+export type {
+  FirewallDecision,
+  FirewallVerdict,
+  FirewallChecks,
+  FirewallStats,
+  SourceTrustCheck,
+  PolicyCheckResult,
+  RiskScoringResult,
+  CapabilityCheckResult,
+  MandateCheckResult,
+} from './economic-instruction-firewall.js';
+export {
+  EconomicInstructionFirewall,
+} from './economic-instruction-firewall.js';
+
+// G6: Economic Audit Event
+export type {
+  EconomicAuditEvent,
+  EconomicAuditEventInput,
+  AuditStats,
+} from './economic-audit-event.js';
+export {
+  EconomicAuditLog,
+} from './economic-audit-event.js';
+
+// G7: Economic Kernel Foundation
+export type {
+  EconomicKernelFoundation,
+} from './economic-kernel-foundation.js';
+export {
+  createEconomicKernelFoundation,
+} from './economic-kernel-foundation.js';
+
+// ── Round 17.8: Economic Truth Surface + Reward/Claim Foundation ──────
+
+// G1-G3: Economic Truth Report
+export type {
+  EconomicTruthReport,
+  IdentityDiagnostics,
+  CapabilityDiagnostics,
+  MandateDiagnostics,
+  FirewallDiagnostics,
+  RewardClaimSummary,
+  EconomicWarning,
+  WarningLevel,
+  DerivedFact,
+  TruthReportDependencies,
+} from './economic-truth-report.js';
+export {
+  generateEconomicTruthReport,
+} from './economic-truth-report.js';
+
+// G4-G5: Reward Definition + Eligibility
+export type {
+  RewardKind,
+  RewardStatus,
+  EligibilityRuleKind,
+  EligibilityRule,
+  RewardDefinition,
+  RewardCreateInput,
+  EligibilityCheckResult,
+} from './reward-definition.js';
+export {
+  RewardRegistry,
+} from './reward-definition.js';
+
+// G6: Claim Lifecycle
+export type {
+  ClaimStatus,
+  ClaimAttempt,
+  ClaimReceipt,
+  ClaimResult,
+  ClaimStats,
+} from './claim-lifecycle.js';
+export {
+  ClaimEngine,
+} from './claim-lifecycle.js';
+
+// ── Round 17.9: Payment Negotiation + Provider Selection ──────────────
+
+// G1-G2-G4: Payment Negotiation Contracts + Engine + 402 Model
+export type {
+  PricingMode,
+  SettlementKind,
+  PaymentRequirement,
+  PaymentRequirementCreateInput,
+  PaymentOffer,
+  NegotiationDecision,
+  NegotiationRejectionCategory,
+  NegotiationRejectionReason,
+  PaymentNegotiationRequest,
+  PaymentNegotiationResult,
+  ConShell402Requirement,
+  ConShell402Response,
+  NegotiationStats,
+} from './payment-negotiation.js';
+export {
+  PaymentNegotiationEngine,
+} from './payment-negotiation.js';
+
+// G3-G6: Provider Selection + Policy-Bound Routing
+export type {
+  ProviderProfile,
+  ProviderProfileCreateInput,
+  SelectionCriteria,
+  SelectionConstraint,
+  OfferComparison,
+  ProviderSelectionResult,
+  NoPayAlternative,
+} from './provider-selection.js';
+export {
+  ProviderSelector,
+} from './provider-selection.js';
+
+// G5-G7: Payment Preparation + Audit Trail
+export type {
+  PreparationStatus,
+  PaymentPreparationIntent,
+  NegotiationAuditEventType,
+  PaymentNegotiationAuditEvent,
+  NegotiationSummary,
+  ProviderSelectionSummary,
+  PendingConfirmationSummary,
+} from './payment-preparation.js';
+export {
+  PaymentPreparationManager,
+  PaymentNegotiationAuditLog,
+} from './payment-preparation.js';
+

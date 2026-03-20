@@ -1,17 +1,8 @@
-/**
- * SkillsPage — 技能管理
- */
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { Puzzle, Search, ToggleLeft, ToggleRight } from 'lucide-react';
 import { api } from '../api';
 
-interface Skill {
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  version?: string;
-  source?: string;
-}
+interface Skill { id: string; name: string; description: string; enabled: boolean; version?: string; source?: string; }
 
 export function SkillsPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -27,14 +18,9 @@ export function SkillsPage() {
 
   const toggleSkill = async (id: string, enabled: boolean) => {
     try {
-      await api.rawRequest(`/api/skills/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ enabled }),
-      });
+      await api.rawRequest(`/api/skills/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
       setSkills(prev => prev.map(s => s.id === id ? { ...s, enabled } : s));
-    } catch (err) {
-      console.error('Toggle skill failed:', err);
-    }
+    } catch {}
   };
 
   const filtered = skills.filter(s =>
@@ -44,44 +30,42 @@ export function SkillsPage() {
 
   return (
     <div>
-      <div style={s.header}>
-        <h1 style={s.title}>Skills</h1>
-        <input
-          style={s.search}
-          placeholder="Search skills…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-      </div>
-      <p style={s.subtitle}>{skills.length} installed · {skills.filter(s => s.enabled).length} enabled</p>
+      <header className="page-header">
+        <span className="page-label label">Extensions</span>
+        <h2 className="page-title">Skills</h2>
+        <p className="page-subtitle">{skills.length} installed · {skills.filter(s => s.enabled).length} enabled</p>
+      </header>
 
-      {loading ? (
-        <div style={s.loading}>Loading skills…</div>
-      ) : filtered.length === 0 ? (
-        <div style={s.empty}>
-          {search ? 'No skills match your search.' : 'No skills installed. Install via CLI: conshell skills install [name]'}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 'var(--space-lg)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius)', padding: '6px 12px', maxWidth: 320 }}>
+        <Search size={14} style={{ color: 'var(--ink-muted)' }} />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search skills…"
+          style={{ border: 'none', background: 'transparent', color: 'var(--ink)', fontSize: 14, outline: 'none', flex: 1, fontFamily: 'var(--font-ui)' }} />
+      </div>
+
+      {loading ? <div className="skeleton" style={{ height: 200, borderRadius: 10 }} /> : filtered.length === 0 ? (
+        <div style={{ color: 'var(--ink-muted)', textAlign: 'center', padding: 48, fontSize: 14 }}>
+          <Puzzle size={32} style={{ opacity: 0.2, marginBottom: 8 }} />
+          <p>{search ? 'No skills match your search.' : 'No skills installed. Install via CLI: conshell skills install [name]'}</p>
         </div>
       ) : (
-        <div style={s.grid}>
+        <div className="data-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>
           {filtered.map(skill => (
-            <div key={skill.id} style={s.card}>
-              <div style={s.cardTop}>
-                <span style={s.skillIcon}>⚡</span>
+            <div key={skill.id} className="card">
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 8 }}>
+                <div className={`card-icon ${skill.enabled ? 'green' : ''}`} style={{ flexShrink: 0 }}><Puzzle size={14} /></div>
                 <div style={{ flex: 1 }}>
-                  <div style={s.skillName}>{skill.name}</div>
-                  {skill.version && <span style={s.version}>v{skill.version}</span>}
+                  <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>{skill.name}</div>
+                  {skill.version && <span className="data-label" style={{ fontSize: 11 }}>v{skill.version}</span>}
                 </div>
-                <label style={s.switch}>
-                  <input
-                    type="checkbox"
-                    checked={skill.enabled}
-                    onChange={e => toggleSkill(skill.id, e.target.checked)}
-                  />
-                  <span style={s.slider} />
-                </label>
+                <button onClick={() => toggleSkill(skill.id, !skill.enabled)} style={{
+                  border: 'none', background: 'transparent', cursor: 'pointer',
+                  color: skill.enabled ? 'var(--green)' : 'var(--ink-muted)',
+                }}>
+                  {skill.enabled ? <ToggleRight size={22} /> : <ToggleLeft size={22} />}
+                </button>
               </div>
-              <p style={s.skillDesc}>{skill.description}</p>
-              {skill.source && <span style={s.source}>{skill.source}</span>}
+              <p style={{ fontSize: 13, color: 'var(--ink-secondary)', margin: '4px 0 0', lineHeight: 1.5, paddingLeft: 36 }}>{skill.description}</p>
+              {skill.source && <span className="data-label" style={{ display: 'block', marginTop: 6, paddingLeft: 36, fontSize: 11 }}>{skill.source}</span>}
             </div>
           ))}
         </div>
@@ -89,31 +73,3 @@ export function SkillsPage() {
     </div>
   );
 }
-
-const s: Record<string, React.CSSProperties> = {
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  title: { fontSize: 28, fontWeight: 700, color: '#f4f4f5', margin: 0 },
-  subtitle: { fontSize: 14, color: '#71717a', margin: '0 0 24px' },
-  search: {
-    padding: '8px 14px', borderRadius: 8, border: '1px solid #27272a',
-    background: '#18181b', color: '#e4e4e7', fontSize: 14, width: 240, outline: 'none',
-  },
-  loading: { color: '#71717a', padding: 32, textAlign: 'center' as const },
-  empty: { color: '#52525b', padding: 48, textAlign: 'center' as const, fontSize: 14 },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 },
-  card: {
-    padding: 20, background: 'rgba(255,255,255,0.02)',
-    borderRadius: 12, border: '1px solid #1e1e2e',
-  },
-  cardTop: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 },
-  skillIcon: { fontSize: 20 },
-  skillName: { fontWeight: 600, fontSize: 15, color: '#f4f4f5' },
-  version: { fontSize: 11, color: '#52525b', marginLeft: 4 },
-  skillDesc: { fontSize: 13, color: '#a1a1aa', margin: '8px 0 0', lineHeight: 1.5 },
-  source: { fontSize: 11, color: '#52525b', display: 'inline-block', marginTop: 8 },
-  switch: { position: 'relative' as const, display: 'inline-block', width: 40, height: 22 },
-  slider: {
-    position: 'absolute' as const, top: 0, left: 0, right: 0, bottom: 0,
-    background: '#27272a', borderRadius: 22, cursor: 'pointer',
-  },
-};

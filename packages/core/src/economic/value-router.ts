@@ -7,6 +7,8 @@
  */
 import type { EconomicState } from './economic-state.js';
 import { classifyHealth } from './economic-state.js';
+import type { TaskFeedbackHeuristic } from './task-feedback-heuristic.js';
+import type { RuntimeMode } from './economic-policy.js';
 
 // ── Task Value Types ─────────────────────────────────────────────────
 
@@ -72,6 +74,12 @@ const BASE_COSTS: Record<TaskDescriptor['type'], number> = {
 // ── Value Router ─────────────────────────────────────────────────────
 
 export class ValueRouter {
+  private readonly heuristic?: TaskFeedbackHeuristic;
+
+  constructor(heuristic?: TaskFeedbackHeuristic) {
+    this.heuristic = heuristic;
+  }
+
   /**
    * Estimate the value of a task.
    */
@@ -136,9 +144,9 @@ export class ValueRouter {
   }
 
   /**
-   * Get a full routing decision for a task.
+   * Get the base routing decision without heuristic adjustments.
    */
-  getRoutingDecision(task: TaskDescriptor, state: EconomicState): RoutingDecision {
+  private getBaseRoutingDecision(task: TaskDescriptor, state: EconomicState): RoutingDecision {
     const estimate = this.estimateTaskValue(task);
     const health = classifyHealth(state);
 
@@ -197,14 +205,39 @@ export class ValueRouter {
   }
 
   /**
+   * Get a full routing decision for a task, including mode-sensitive heuristic adjustments.
+   */
+  getRoutingDecision(task: TaskDescriptor, state: EconomicState, mode?: RuntimeMode): RoutingDecision {
+    const base = this.getBaseRoutingDecision(task, state);
+    
+    if (!this.heuristic) {
+      return base;
+    }
+
+    const adjustment = mode 
+      ? this.heuristic.getPriorityAdjustmentForMode(task.type, task.id, task.isRevenueBearing, mode)
+      : this.heuristic.getPriorityAdjustment(task.type, task.isRevenueBearing);
+
+    if (adjustment === 0) {
+      return base;
+    }
+
+    return {
+      ...base,
+      priority: base.priority + adjustment,
+      reason: base.reason + ` (feedback adj: ${adjustment > 0 ? '+' : ''}${adjustment})`,
+    };
+  }
+
+  /**
    * Sort and prioritize a list of tasks based on economic value.
    * Revenue-generating tasks first, then by net value.
    */
-  prioritizeTasks(tasks: TaskDescriptor[], state: EconomicState): Array<{ task: TaskDescriptor; decision: RoutingDecision }> {
+  prioritizeTasks(tasks: TaskDescriptor[], state: EconomicState, mode?: RuntimeMode): Array<{ task: TaskDescriptor; decision: RoutingDecision }> {
     return tasks
       .map(task => ({
         task,
-        decision: this.getRoutingDecision(task, state),
+        decision: this.getRoutingDecision(task, state, mode),
       }))
       .sort((a, b) => b.decision.priority - a.decision.priority);
   }

@@ -316,22 +316,6 @@ export interface RestoreResult {
 }
 
 /**
- * Restore IdentityRecords from a serialized snapshot (Round 17.5 hardened).
- *
- * 3-layer validation:
- *   1. Format: required fields present and typed correctly
- *   2. Chain: version monotonic, previousRecordId linkage
- *   3. Status: at most 1 active record
- *
- * Returns RestoreResult with validation errors if any.
- * Legacy compatibility: returns null → use restoreRecordsHardened directly.
- */
-export function restoreRecords(snapshot: unknown): IdentityRecord[] | null {
-  const result = restoreRecordsHardened(snapshot);
-  return result.valid ? result.records : null;
-}
-
-/**
  * Hardened restore with full validation report.
  */
 export function restoreRecordsHardened(snapshot: unknown): RestoreResult {

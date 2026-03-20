@@ -18,6 +18,7 @@ describe('SelfMod', () => {
       agentHome: TEST_HOME,
       maxModsPerHour: 3,
       gitEnabled: false, // disable git for unit tests
+      requireApproval: true,
     });
   });
 
@@ -25,9 +26,15 @@ describe('SelfMod', () => {
     fs.rmSync(TEST_HOME, { recursive: true, force: true });
   });
 
+  async function performMod(file: string, content: string, reason: string) {
+    const rec = await mgr.propose(file, content, reason);
+    mgr.approve(rec.id);
+    return await mgr.apply(rec.id);
+  }
+
   describe('modify', () => {
     it('should create a new file', async () => {
-      const record = await mgr.modify('test.txt', 'Hello World', 'test creation');
+      const record = await performMod('test.txt', 'Hello World', 'test creation');
       expect(record.id).toMatch(/^mod_/);
       expect(record.file).toBe('test.txt');
       expect(record.reason).toBe('test creation');
@@ -41,15 +48,15 @@ describe('SelfMod', () => {
       const filePath = path.join(TEST_HOME, 'existing.txt');
       fs.writeFileSync(filePath, 'old content');
 
-      const record = await mgr.modify('existing.txt', 'new content', 'update');
+      const record = await performMod('existing.txt', 'new content', 'update');
       expect(record.diff).toContain('- old content');
       expect(record.diff).toContain('+ new content');
       expect(fs.readFileSync(filePath, 'utf-8')).toBe('new content');
     });
 
     it('should record modification in history', async () => {
-      await mgr.modify('a.txt', 'aaa', 'first');
-      await mgr.modify('b.txt', 'bbb', 'second');
+      await performMod('a.txt', 'aaa', 'first');
+      await performMod('b.txt', 'bbb', 'second');
 
       const history = mgr.history();
       expect(history).toHaveLength(2);
@@ -58,7 +65,7 @@ describe('SelfMod', () => {
     });
 
     it('should write audit log', async () => {
-      await mgr.modify('audit-test.txt', 'content', 'audit test');
+      await performMod('audit-test.txt', 'content', 'audit test');
       const auditPath = path.join(TEST_HOME, 'audit.jsonl');
       expect(fs.existsSync(auditPath)).toBe(true);
       const lines = fs.readFileSync(auditPath, 'utf-8').trim().split('\n');
@@ -69,29 +76,31 @@ describe('SelfMod', () => {
 
   describe('protected files', () => {
     it('should reject modification of constitution.md', async () => {
-      await expect(mgr.modify('constitution.md', 'hacked', 'evil')).rejects.toThrow(ProtectedFileError);
+      await expect(mgr.propose('constitution.md', 'hacked', 'evil')).rejects.toThrow(ProtectedFileError);
     });
 
     it('should reject modification of SOUL.md', async () => {
-      await expect(mgr.modify('SOUL.md', 'changed', 'override')).rejects.toThrow(ProtectedFileError);
+      await expect(mgr.propose('SOUL.md', 'changed', 'override')).rejects.toThrow(ProtectedFileError);
     });
   });
 
   describe('rate limiting', () => {
     it('should allow modifications within limit', async () => {
-      await mgr.modify('f1.txt', 'a', 'mod 1');
-      await mgr.modify('f2.txt', 'b', 'mod 2');
-      await mgr.modify('f3.txt', 'c', 'mod 3');
+      await performMod('f1.txt', 'a', 'mod 1');
+      await performMod('f2.txt', 'b', 'mod 2');
+      await performMod('f3.txt', 'c', 'mod 3');
       // 3 mods within limit of 3
       expect(mgr.stats().lastHour).toBe(3);
     });
 
     it('should reject when rate limit exceeded', async () => {
-      await mgr.modify('f1.txt', 'a', 'mod 1');
-      await mgr.modify('f2.txt', 'b', 'mod 2');
-      await mgr.modify('f3.txt', 'c', 'mod 3');
+      await performMod('f1.txt', 'a', 'mod 1');
+      await performMod('f2.txt', 'b', 'mod 2');
+      await performMod('f3.txt', 'c', 'mod 3');
       // 4th should fail
-      await expect(mgr.modify('f4.txt', 'd', 'mod 4')).rejects.toThrow(SelfModRateLimitError);
+      const rec = await mgr.propose('f4.txt', 'd', 'mod 4');
+      mgr.approve(rec.id);
+      await expect(mgr.apply(rec.id)).rejects.toThrow(SelfModRateLimitError);
     });
   });
 
@@ -100,7 +109,7 @@ describe('SelfMod', () => {
       const stats0 = mgr.stats();
       expect(stats0.total).toBe(0);
 
-      await mgr.modify('s.txt', 'data', 'stat test');
+      await performMod('s.txt', 'data', 'stat test');
       const stats1 = mgr.stats();
       expect(stats1.total).toBe(1);
       expect(stats1.lastHour).toBe(1);
@@ -110,8 +119,8 @@ describe('SelfMod', () => {
 
   describe('history filtering', () => {
     it('should filter by file', async () => {
-      await mgr.modify('keep.txt', 'keep', 'keep');
-      await mgr.modify('skip.txt', 'skip', 'skip');
+      await performMod('keep.txt', 'keep', 'keep');
+      await performMod('skip.txt', 'skip', 'skip');
 
       const filtered = mgr.history({ file: 'keep' });
       expect(filtered).toHaveLength(1);

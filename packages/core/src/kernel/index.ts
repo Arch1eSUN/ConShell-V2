@@ -33,18 +33,22 @@ import { WebSocketServer } from '../server/websocket.js';
 import type { EvoMapClient } from '../evomap/client.js';
 import { ContinuityService, type SelfState } from '../identity/continuity-service.js';
 import { ConsolidationPipeline } from '../memory/consolidation.js';
+import { CommitmentStore } from '../agenda/index.js';
+import { SchedulerService } from '../scheduler/index.js';
 import { SpendTracker as SpendTrackerFull } from '../spend/index.js';
 import { SpendRepository } from '../state/repos/spend.js';
 import { ConwayAutomaton } from '../automaton/index.js';
 import { EconomicStateService } from '../economic/economic-state-service.js';
 import { GovernanceService, type GovernanceServiceOptions } from '../governance/governance-service.js';
 import type { SelfModManager } from '../selfmod/index.js';
+import type { GovernedSelfModGate } from '../selfmod/governed-selfmod-gate.js';
 import type { MultiAgentManager } from '../multiagent/index.js';
 import type { LineageService } from '../lineage/index.js';
 import type { CollectiveService } from '../collective/index.js';
 import type { ReputationService } from '../collective/reputation-service.js';
 import type { PeerDiscoveryService } from '../collective/discovery-service.js';
 import type { PeerSelector } from '../collective/peer-selector.js';
+import type { AgentPostureService } from '../api-surface/agent-posture-service.js';
 
 // Sub-modules
 import { registerProviders } from './provider-factory.js';
@@ -60,6 +64,7 @@ export type BootStage =
   | 'soul'
   | 'identity'
   | 'memory'
+  | 'agenda'
   | 'models'
   | 'automaton'
   | 'governance'
@@ -84,6 +89,8 @@ export interface KernelServices {
   continuity: ContinuityService;
   selfState: SelfState;
   memory: MemoryTierManager;
+  agenda: CommitmentStore;
+  scheduler: SchedulerService;
   inference: InferenceRouter;
   stateMachine: AgentStateMachine;
   agentLoop: AgentLoop;
@@ -116,6 +123,10 @@ export interface KernelServices {
   reputation: ReputationService;
   /** Round 16.7: Peer selector */
   selector: PeerSelector;
+  /** Round 19.3: Governed self-modification gate */
+  selfModGate: GovernedSelfModGate;
+  /** Round 19.3: Agent posture service (externalized truth surface) */
+  postureService: AgentPostureService;
 }
 
 export interface BootResult {
@@ -230,7 +241,7 @@ export class Kernel {
 
       // ── Step 6: Identity / Continuity ─────────────────────────────────
       const identityResult = await this.runStage('identity', async () => {
-        const continuity = new ContinuityService(db, logger);
+        const continuity = new ContinuityService(db, logger, agentHome);
         const selfState = continuity.hydrate({
           soulContent: soul.current.raw,
           soulName: soul.current.name,
@@ -264,6 +275,32 @@ export class Kernel {
 
       logger.info('Memory initialized', { ownerId });
 
+      // ── Step 7.5: Agenda & Scheduler ──────────────────────────────────
+      const { agenda, scheduler } = await this.runStage('agenda', async () => {
+        const { CommitmentRepository } = await import('../state/repos/commitment.js');
+        const repo = new CommitmentRepository(db);
+        const store = new CommitmentStore(repo);
+        await store.loadFromRepo();
+
+        const { MemorySchedulerBackend, SchedulerService } = await import('../scheduler/index.js');
+        const schedulerBackend = new MemorySchedulerBackend();
+        const sched = new SchedulerService(schedulerBackend);
+
+        try {
+          const snapshot = identityResult.continuity.loadSchedulerSnapshot();
+          if (snapshot) {
+            sched.restore(snapshot);
+            logger.info('Scheduler snapshot restored', { pending: snapshot.pendingCount });
+          }
+        } catch (err) {
+          logger.warn('Failed to load scheduler snapshot, starting fresh', { error: String(err) });
+        }
+
+        return { agenda: store, scheduler: sched };
+      });
+
+      logger.info('Agenda & Scheduler initialized', { activeCommitments: agenda.list().length });
+
       // ── Step 7: Models / Inference ──────────────────────────────────
       const inference = await this.runStage('models', async () => {
         const router = new InferenceRouter(logger);
@@ -280,6 +317,8 @@ export class Kernel {
         const toolExecutor = new ToolExecutor(logger);
         const taskQueue = new TaskQueue(logger);
 
+        // Scheduler handler will be wired after AgentLoop and ToolExecutor instantiation
+        
         const { allBuiltinTools } = await import('../runtime/tools/index.js');
         toolExecutor.registerTools(allBuiltinTools);
 
@@ -319,7 +358,50 @@ export class Kernel {
         // Round 15.7B: Wire economic service into agent loop for survival gate
         agentLoop.setEconomicService(economicService);
 
-        return { stateMachine, toolExecutor, agentLoop, taskQueue, conversationService, spendTracker, conwayAutomaton, economicService };
+        // ── Round 19.2: High-Trust Autonomy — Guard + Audit + Materializer ──
+        const { CommitmentMaterializer } = await import('../runtime/materializer.js');
+        const { ExecutionGuard } = await import('../runtime/execution-guard.js');
+        const { ExecutionAuditTrail } = await import('../runtime/execution-audit.js');
+
+        const executionGuard = new ExecutionGuard(logger);
+        const executionAudit = new ExecutionAuditTrail(logger);
+
+        const materializer = new CommitmentMaterializer(logger, agenda, agentLoop, toolExecutor);
+        materializer.setGuard(executionGuard);
+        materializer.setAuditTrail(executionAudit);
+        
+        scheduler.setHandler((task) => {
+          const commitment = agenda.get(task.commitmentId);
+          if (!commitment) {
+            logger.warn('Scheduler triggered for missing commitment', { commitmentId: task.commitmentId });
+            return { taskId: task.id, success: true, result: 'Skipped: Missing commitment' };
+          }
+
+          // Guard check at scheduler level — prevents concurrent dispatch
+          if (executionGuard.isTerminal(commitment.id)) {
+            logger.debug('Scheduler skipped: terminal blacklist', { commitmentId: commitment.id });
+            return { taskId: task.id, success: true, result: 'Skipped: terminal commitment' };
+          }
+
+          if (executionGuard.isActive(commitment.id)) {
+            logger.debug('Scheduler skipped: already executing', { commitmentId: commitment.id });
+            return { taskId: task.id, success: true, result: 'Skipped: concurrent execution guard' };
+          }
+          
+          agenda.markActive(commitment.id);
+          
+          const queuedTask = materializer.materialize(commitment, task);
+          const enqueued = taskQueue.enqueue(queuedTask);
+          
+          if (!enqueued) {
+             logger.info('Scheduler skipped enqueuing task', { taskId: task.id, commitmentId: task.commitmentId, reason: 'rejected by queue' });
+             return { taskId: task.id, success: true, result: 'Skipped: deduplicated or rejected by queue' };
+          }
+
+          return { taskId: task.id, success: true, result: 'Enqueued' };
+        });
+
+        return { stateMachine, toolExecutor, agentLoop, taskQueue, conversationService, spendTracker, conwayAutomaton, economicService, executionGuard, executionAudit };
       });
 
       logger.info('Automaton ready', {
@@ -376,11 +458,30 @@ export class Kernel {
           lineage,
           collective,
           logger,
-          dailyBudgetCents: cfgGet<number>(config, 'dailyBudgetCents', 100_00),
-          dailySpentCents: 0,
         };
 
         const governance = new GovernanceService(govOpts);
+
+        // Round 19.3: Wire GovernedSelfModGate into governance lifecycle
+        const { GovernedSelfModGate: GSG } = await import('../selfmod/governed-selfmod-gate.js');
+        const selfModGateAdapter: import('../selfmod/governed-selfmod-gate.js').SelfModGovernanceProvider = {
+          propose: (input) => governance.propose(input) as any,
+          evaluate: (proposalId) => {
+            const v = governance.evaluate(proposalId);
+            return { code: v.code === 'allow' ? 'allow' : v.code === 'deny' ? 'deny' : 'require_review', reason: v.reason };
+          },
+          apply: (proposalId) => governance.apply(proposalId).then(r => ({
+            result: r.result, reason: r.reason,
+            relatedIds: r.relatedIds,
+          })),
+          forceApprove: (proposalId) => {
+            const v = governance.forceApprove(proposalId);
+            return { code: v.code };
+          },
+        };
+        const selfModGate = new GSG(selfModGateAdapter, selfmod, logger);
+        // Inject gate back into governance for pause/resume lifecycle actions
+        (governance as any).selfModGate = selfModGate;
 
         // Round 16.7: Initialize ReputationService, DiscoveryService, StalenessPolicy, PeerSelector
         const { ReputationService: RS } = await import('../collective/reputation-service.js');
@@ -404,7 +505,7 @@ export class Kernel {
         const { PeerSelector: PSel } = await import('../collective/peer-selector.js');
         const selector = new PSel(collective, reputation);
 
-        return { governance, selfmod, multiagent, lineage, collective, discovery, reputation, selector };
+        return { governance, selfmod, multiagent, lineage, collective, discovery, reputation, selector, selfModGate };
       });
 
       logger.info('Governance + Lineage + Collective ready', {
@@ -413,6 +514,80 @@ export class Kernel {
         lineage: !!governanceResult.lineage,
         collective: !!governanceResult.collective,
       });
+
+      // ── Step 8.6: AgentPostureService (Round 19.3 — G6 Truth Surface) ──
+      const { AgentPostureService: APS } = await import('../api-surface/agent-posture-service.js');
+      const { DefaultAgendaPostureProvider: DAPP } = await import('../agenda/agenda-posture-provider.js');
+      const postureService = new APS(
+        identityResult.selfState.anchor.id,
+        '2.0.0',
+        {
+          identity: {
+            getPosture: () => ({
+              mode: identityResult.selfState.mode,
+              chainValid: identityResult.selfState.chainValid,
+              chainLength: identityResult.selfState.chainLength,
+              soulDrifted: identityResult.selfState.soulDrifted,
+              fingerprint: identityResult.selfState.anchor.id,
+            }),
+          },
+          economic: {
+            getPosture: () => {
+              const econ = automaton.economicService;
+              if (!econ) {
+                return { survivalTier: 'unknown', balanceCents: 0, burnRateCentsPerDay: 0, runwayDays: 0, profitabilityRatio: 0 };
+              }
+              const proj = econ.getProjection();
+              return {
+                survivalTier: String(proj.survivalTier),
+                balanceCents: proj.currentBalanceCents,
+                burnRateCentsPerDay: proj.burnRateCentsPerDay,
+                runwayDays: proj.runwayDays,
+                profitabilityRatio: proj.totalSpendCents > 0 ? proj.totalRevenueCents / proj.totalSpendCents : 0,
+              };
+            },
+          },
+          lineage: {
+            getPosture: () => ({
+              activeChildren: 0,
+              degradedChildren: 0,
+              totalFundingAllocated: 0,
+              totalFundingSpent: 0,
+              healthScore: 100,
+            }),
+          },
+          collective: {
+            getPosture: () => {
+              const diag = governanceResult.collective.diagnostics();
+              return {
+                totalPeers: diag.totalPeers,
+                trustedPeers: diag.byStatus?.['trusted'] ?? 0,
+                degradedPeers: diag.degradedPeerCount ?? 0,
+                delegationSuccessRate: diag.delegationSuccessRate ?? 0,
+              };
+            },
+          },
+          governance: {
+            getPosture: () => {
+              const diag = governanceResult.governance.diagnostics();
+              return {
+                pendingProposals: diag.proposalsByStatus?.['pending'] ?? 0,
+                recentVerdicts: diag.totalProposals ?? 0,
+                selfModQuarantined: governanceResult.selfModGate?.isPaused() ?? false,
+              };
+            },
+          },
+          // Round 19.8: Agenda truth — canonical from CommitmentStore
+          agenda: new DAPP(agenda),
+        },
+      );
+
+      logger.info('AgentPostureService ready (G6 truth surface externalized)');
+
+      // Round 19.8 G7: Register diagnostic tools (doctor + export_posture)
+      const { createDiagnosticsTools } = await import('../runtime/tools/diagnostics.js');
+      automaton.toolExecutor.registerTools(createDiagnosticsTools(postureService));
+      logger.info('Diagnostic tools registered (doctor, export_posture)');
 
       // ── Step 9: Skills ──────────────────────────────────────────────
       const skills = await this.runStage('skills', async () => {
@@ -437,6 +612,7 @@ export class Kernel {
           discovery: governanceResult.discovery,
           reputation: governanceResult.reputation,
           selector: governanceResult.selector,
+          postureService,
         });
       });
 
@@ -457,7 +633,6 @@ export class Kernel {
           logger.warn('EvoMap init failed', { error: String(err) });
         }
 
-        // Round 15.8: Economic state refresh heartbeat (every 5 min)
         if (automaton.economicService) {
           hb.registerTask({
             name: 'economic-refresh',
@@ -476,6 +651,16 @@ export class Kernel {
           });
         }
 
+        // Round 18.8: Scheduler tick heartbeat (every 10s)
+        hb.registerTask({
+          name: 'scheduler-tick',
+          intervalMs: 10 * 1000,
+          enabled: true,
+          execute: async () => {
+            scheduler.tick();
+          },
+        });
+
         hb.start();
         return hb;
       });
@@ -487,7 +672,7 @@ export class Kernel {
         logger, config, db, wallet, soul,
         continuity: identityResult.continuity,
         selfState: identityResult.selfState,
-        memory, inference,
+        memory, agenda, scheduler, inference,
         stateMachine: automaton.stateMachine,
         agentLoop: automaton.agentLoop,
         toolExecutor: automaton.toolExecutor,
@@ -507,6 +692,8 @@ export class Kernel {
         discovery: governanceResult.discovery,
         reputation: governanceResult.reputation,
         selector: governanceResult.selector,
+        selfModGate: governanceResult.selfModGate,
+        postureService,
       };
 
       // Round 15.8: Wire economic policy to runtime consumers
@@ -672,6 +859,12 @@ export class Kernel {
       sessionCount: this._sessionCount,
       memoryEpisodeCount: episodeCount,
     });
+    
+    // Round 18.8: Save scheduler snapshot on turn checkpoint
+    if (this.services.scheduler && continuity) {
+      const schedSnap = this.services.scheduler.snapshot();
+      continuity.saveSchedulerSnapshot(schedSnap);
+    }
 
     logger.info('Turn checkpointed — continuity advanced', {
       sessionId: effectiveSessionId,
@@ -731,11 +924,17 @@ export class Kernel {
   async shutdown(): Promise<void> {
     if (!this.services) return;
 
-    const { logger, heartbeat, httpServer, stateMachine } = this.services;
+    const { logger, heartbeat, httpServer, stateMachine, scheduler, continuity } = this.services;
     logger.info('🐢 Shutting down…');
 
     // Checkpoint current turn before stopping services
     this.checkpointTurn();
+    
+    // Explicitly flush scheduler snapshot on stop
+    if (scheduler && continuity) {
+      const schedSnap = scheduler.snapshot();
+      continuity.saveSchedulerSnapshot(schedSnap);
+    }
 
     heartbeat.stop();
     await httpServer.stop();

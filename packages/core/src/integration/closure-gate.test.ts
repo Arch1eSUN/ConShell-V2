@@ -51,10 +51,10 @@ const KERNEL_PATH = join(SRC_ROOT, 'kernel', 'index.ts');
 function freshDb() {
   const agentHome = join(tmpdir(), `closure-gate-${randomUUID()}`);
   mkdirSync(agentHome, { recursive: true });
-  return openDatabase({ agentHome, logger: silentLogger });
+  return { db: openDatabase({ agentHome, logger: silentLogger }), agentHome };
 }
 
-function wireKernel(db: ReturnType<typeof freshDb>, continuity: ContinuityService) {
+function wireKernel({db, agentHome}: ReturnType<typeof freshDb>, continuity: ContinuityService) {
   const kernel = new Kernel();
   const memory = new MemoryTierManager(db, silentLogger, {
     ownerId: 'test-owner-001',
@@ -85,7 +85,7 @@ function wireKernel(db: ReturnType<typeof freshDb>, continuity: ContinuityServic
 // ══════════════════════════════════════════════════════════════════════
 describe('Criterion 1: buildContext() owner-aware production path', () => {
   it('returns owner-scoped session summaries when ownerId is set', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
     const memory = new MemoryTierManager(db, silentLogger, { ownerId: 'owner-A' });
 
     // Insert summaries for two owners
@@ -101,7 +101,7 @@ describe('Criterion 1: buildContext() owner-aware production path', () => {
   });
 
   it('returns unscoped summaries when ownerId is not set', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
     const memory = new MemoryTierManager(db, silentLogger);
 
     const repo = new SessionSummariesRepository(db);
@@ -120,11 +120,11 @@ describe('Criterion 1: buildContext() owner-aware production path', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('Criterion 2: ConsolidationPipeline runtime wiring', () => {
   it('checkpointTurn calls consolidateSession', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'ClosureGateAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({ db, agentHome } as any, continuity);
     kernel.startSession('gate-session-1');
 
     // Spy on the consolidation pipeline
@@ -141,11 +141,11 @@ describe('Criterion 2: ConsolidationPipeline runtime wiring', () => {
   });
 
   it('consolidation failure does not block continuity advance', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'ClosureGateAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({ db, agentHome } as any, continuity);
     kernel.startSession('gate-session-2');
 
     // Make consolidation throw
@@ -199,7 +199,7 @@ describe('Criterion 3: checkpointTurn naming consistency', () => {
 // ══════════════════════════════════════════════════════════════════════
 describe('Criterion 4: Owner-scoped episode count', () => {
   it('getEpisodeCountForOwner returns only owned episodes', () => {
-    const db = freshDb();
+    const { db, agentHome } = freshDb();
     const memory = new MemoryTierManager(db, silentLogger, { ownerId: 'owner-X' });
 
     // Insert episodes for different owners
@@ -218,11 +218,11 @@ describe('Criterion 4: Owner-scoped episode count', () => {
   });
 
   it('checkpointTurn uses owner-scoped count when ownerId is set', () => {
-    const db = freshDb();
-    const continuity = new ContinuityService(db, silentLogger);
+    const { db, agentHome } = freshDb();
+    const continuity = new ContinuityService(db, silentLogger, agentHome);
     continuity.hydrate({ soulContent: SOUL_CONTENT, soulName: 'ClosureGateAgent' });
 
-    const kernel = wireKernel(db, continuity);
+    const kernel = wireKernel({ db, agentHome } as any, continuity);
 
     // Insert episodes for different owners to create divergence
     const repo = new EpisodicMemoryRepository(db);

@@ -19,7 +19,7 @@ import { EconomicPolicy, resolveRuntimeMode, type RuntimeMode, type DecisionReco
 import { type RevenueService } from './revenue-service.js';
 import { type RevenueSurfaceRegistry } from './revenue-surface.js';
 import type { RevenueEvent } from './value-events.js';
-
+import { TaskFeedbackHeuristic } from './task-feedback-heuristic.js';
 // ── Economic Projection (Round 16.9 — Canonical unified view) ────────
 
 export interface EconomicProjection {
@@ -92,6 +92,7 @@ export class EconomicStateService {
   private _policy: EconomicPolicy;
   private _revenueService?: RevenueService;
   private _revenueSurfaces?: RevenueSurfaceRegistry;
+  private _feedbackHeuristic: TaskFeedbackHeuristic;
 
   constructor(
     spendTracker: SpendTracker,
@@ -99,17 +100,19 @@ export class EconomicStateService {
     logger: Logger,
     revenueService?: RevenueService,
     revenueSurfaces?: RevenueSurfaceRegistry,
+    feedbackHeuristic?: TaskFeedbackHeuristic,
   ) {
     this.spendTracker = spendTracker;
     this.automaton = automaton;
     this.logger = logger.child('economic-svc');
     this.gate = new SurvivalGate();
-    this.router = new ValueRouter();
     this.narrator = new EconomicNarrator();
     this.projection = new LedgerProjection();
     this._policy = new EconomicPolicy();
     this._revenueService = revenueService;
     this._revenueSurfaces = revenueSurfaces;
+    this._feedbackHeuristic = feedbackHeuristic ?? new TaskFeedbackHeuristic();
+    this.router = new ValueRouter(this._feedbackHeuristic);
 
     // Wire ledger projection to receive spend/income events
     this.projection.wire(spendTracker);
@@ -214,7 +217,7 @@ export class EconomicStateService {
    * Get a routing decision for a task — consumed by AgentLoop or task queue.
    */
   getTaskRouting(task: TaskDescriptor): RoutingDecision {
-    return this.router.getRoutingDecision(task, this.snapshot());
+    return this.router.getRoutingDecision(task, this.snapshot(), this.getCurrentMode());
   }
 
   /**
@@ -243,6 +246,31 @@ export class EconomicStateService {
    */
   getLedgerProjection(): LedgerProjection {
     return this.projection;
+  }
+
+  /**
+   * Evaluate if the agent can afford to replicate (spawn a child).
+   * Checks if balance is above the requested funding + a safety buffer (Round 18.6).
+   */
+  evaluateLineageViability(requestedFundingCents: number): { viable: boolean; reason: string } {
+    const state = this.snapshot();
+    
+    if (state.survivalTier === 'dead' || state.survivalTier === 'terminal') {
+      return { viable: false, reason: `Cannot replicate from tier: ${state.survivalTier}` };
+    }
+
+    // Safety buffer: 1000 cents ($10), so parent isn't drained completely
+    const required = requestedFundingCents + 1000;
+    const available = state.balanceCents;
+    
+    if (available < required) {
+      return { 
+        viable: false, 
+        reason: `Insufficient funds. Have ${available}¢, need ${required}¢ (funding + 1000¢ safety buffer)` 
+      };
+    }
+    
+    return { viable: true, reason: 'Viable' };
   }
 
   // ── Round 15.8: RuntimeMode + Policy ────────────────────────────────
@@ -347,5 +375,12 @@ export class EconomicStateService {
    */
   getRevenueService(): RevenueService | undefined {
     return this._revenueService;
+  }
+
+  /**
+   * Get the TaskFeedbackHeuristic to analyze and track task completion events.
+   */
+  getFeedbackHeuristic(): TaskFeedbackHeuristic {
+    return this._feedbackHeuristic;
   }
 }

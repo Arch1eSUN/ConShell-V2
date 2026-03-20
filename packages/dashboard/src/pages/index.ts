@@ -1,4 +1,4 @@
-export { OverviewPage } from './OverviewPage';
+export { PresencePage } from './PresencePage';
 export { ChatPage } from './ChatPage';
 export { SettingsPage } from './SettingsPage';
 export { MetricsPage } from './MetricsPage';
@@ -10,3 +10,5 @@ export { WalletPage } from './WalletPage';
 export { TasksPage } from './TasksPage';
 export { MemoryPage } from './MemoryPage';
 export { EconomicPage } from './EconomicPage';
+export { GovernancePage } from './GovernancePage';
+export { CollectivePage } from './CollectivePage';

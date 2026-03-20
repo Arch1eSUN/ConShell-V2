@@ -26,3 +26,15 @@ export {
   TERMINAL_CHILD_STATUSES,
   isValidChildTransition,
 } from './lineage-contract.js';
+
+// Round 19.4: Governance bridge
+export { LineageGovernanceBridge } from './lineage-governance-bridge.js';
+export type {
+  LineageLifecycleEvent,
+  LineageEventKind,
+  BridgeEffect,
+  GovernanceAuditSink,
+  EconomicFundingRecovery,
+  LineageHealthSnapshot,
+  CollectivePeerSync,
+} from './lineage-governance-bridge.js';

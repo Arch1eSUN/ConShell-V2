@@ -29,15 +29,17 @@ export class SelfModRateLimitError extends Error {
   }
 }
 
+export type ModificationStatus = 'proposed' | 'approved' | 'applied' | 'verified' | 'rolled-back' | 'rejected';
+
 export interface ModificationRecord {
   id: string;
   file: string;
+  newContent: string;
   diff: string;
   reason: string;
   timestamp: string;
-  approved: boolean;
+  status: ModificationStatus;
   gitCommit?: string;
-  rolledBack?: boolean;
 }
 
 export interface SelfModOptions {
@@ -74,25 +76,16 @@ export class SelfModManager {
   }
 
   /**
-   * Apply a self-modification to a file.
-   * Validates against constitution, checks rate limits, and records to git.
+   * Propose a self-modification to a file.
+   * Validates against constitution, generates a diff, but DOES NOT WRITE the file yet.
    */
-  async modify(file: string, content: string, reason: string): Promise<ModificationRecord> {
+  async propose(file: string, content: string, reason: string): Promise<ModificationRecord> {
     // 1. Check protected files
     if (isProtectedFile(file) || this.opts.protectedPaths.some(p => file.includes(p))) {
       throw new ProtectedFileError(file);
     }
 
-    // 2. Rate limit check
-    const hourAgo = Date.now() - 3600_000;
-    const recentMods = this.records.filter(
-      r => new Date(r.timestamp).getTime() > hourAgo && !r.rolledBack
-    );
-    if (recentMods.length >= this.opts.maxModsPerHour) {
-      throw new SelfModRateLimitError(this.opts.maxModsPerHour);
-    }
-
-    // 3. Generate diff
+    // 2. Generate diff
     const absPath = path.isAbsolute(file) ? file : path.join(this.opts.agentHome, file);
     let diff = '';
     if (fs.existsSync(absPath)) {
@@ -102,31 +95,93 @@ export class SelfModManager {
       diff = `+++ new file: ${file}\n${content.split('\n').map(l => `+ ${l}`).join('\n')}`;
     }
 
-    // 4. Write file
-    const dir = path.dirname(absPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(absPath, content, 'utf-8');
-
-    // 5. Create record
+    // 3. Create proposed record
     const record: ModificationRecord = {
       id: `mod_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       file,
+      newContent: content,
       diff: diff.slice(0, 2000), // Truncate long diffs
       reason,
       timestamp: new Date().toISOString(),
-      approved: !this.opts.requireApproval,
+      status: this.opts.requireApproval ? 'proposed' : 'approved',
     };
 
-    // 6. Git commit
-    if (this.opts.gitEnabled) {
-      record.gitCommit = this.gitCommit(absPath, `selfmod: ${reason}`);
-    }
-
-    // 7. Audit log
     this.records.push(record);
     this.appendAuditLog(record);
-    this.logger.info('Self-modification applied', { id: record.id, file, reason });
+    this.logger.info('Self-modification proposed', { id: record.id, file, reason, status: record.status });
 
+    return record;
+  }
+
+  /** Approve a proposed modification */
+  approve(recordId: string): ModificationRecord {
+    const record = this.records.find(r => r.id === recordId);
+    if (!record) throw new Error(`Modification record not found: ${recordId}`);
+    if (record.status !== 'proposed') throw new Error(`Cannot approve record in status: ${record.status}`);
+    
+    record.status = 'approved';
+    this.appendAuditLog(record);
+    this.logger.info('Self-modification approved', { id: recordId });
+    return record;
+  }
+
+  /** Reject a proposed modification */
+  reject(recordId: string): ModificationRecord {
+    const record = this.records.find(r => r.id === recordId);
+    if (!record) throw new Error(`Modification record not found: ${recordId}`);
+    if (record.status !== 'proposed') throw new Error(`Cannot reject record in status: ${record.status}`);
+    
+    record.status = 'rejected';
+    this.appendAuditLog(record);
+    this.logger.info('Self-modification rejected', { id: recordId });
+    return record;
+  }
+
+  /**
+   * Apply an approved modification to disk and commit to git.
+   */
+  async apply(recordId: string): Promise<ModificationRecord> {
+    const record = this.records.find(r => r.id === recordId);
+    if (!record) throw new Error(`Modification record not found: ${recordId}`);
+    if (record.status !== 'approved') throw new Error(`Cannot apply record in status: ${record.status}`);
+
+    // Rate limit check
+    const hourAgo = Date.now() - 3600_000;
+    const recentMods = this.records.filter(
+      r => new Date(r.timestamp).getTime() > hourAgo && r.status === 'applied'
+    );
+    if (recentMods.length >= this.opts.maxModsPerHour) {
+      throw new SelfModRateLimitError(this.opts.maxModsPerHour);
+    }
+
+    const absPath = path.isAbsolute(record.file) ? record.file : path.join(this.opts.agentHome, record.file);
+    const dir = path.dirname(absPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    
+    // Write file
+    fs.writeFileSync(absPath, record.newContent, 'utf-8');
+
+    // Git commit
+    if (this.opts.gitEnabled) {
+      record.gitCommit = this.gitCommit(absPath, `selfmod: ${record.reason}`);
+    }
+
+    record.status = 'applied';
+    this.appendAuditLog(record);
+    this.logger.info('Self-modification applied', { id: recordId, file: record.file });
+
+    return record;
+  }
+
+  /** Verify an applied modification */
+  verify(recordId: string): ModificationRecord {
+    const record = this.records.find(r => r.id === recordId);
+    if (!record) throw new Error(`Modification record not found: ${recordId}`);
+    if (record.status !== 'applied') throw new Error(`Cannot verify record in status: ${record.status}`);
+    
+    record.status = 'verified';
+    this.appendAuditLog(record);
+    this.logger.info('Self-modification verified', { id: recordId });
     return record;
   }
 
@@ -146,7 +201,7 @@ export class SelfModManager {
         cwd: this.opts.agentHome,
         timeout: 5_000,
       });
-      record.rolledBack = true;
+      record.status = 'rolled-back';
       this.logger.info('Self-modification rolled back', { id: recordId });
       return true;
     } catch (err) {
@@ -174,7 +229,7 @@ export class SelfModManager {
     return {
       total: this.records.length,
       lastHour: this.records.filter(r => new Date(r.timestamp).getTime() > hourAgo).length,
-      rolledBack: this.records.filter(r => r.rolledBack).length,
+      rolledBack: this.records.filter(r => r.status === 'rolled-back').length,
     };
   }
 

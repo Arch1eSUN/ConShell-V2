@@ -22,7 +22,12 @@ export type GovernanceActionKind =
   | 'dangerous_action'        // high-risk file/system/network ops
   | 'delegate_task'           // delegate a task to a peer (Round 17.2)
   | 'delegate_selfmod'        // delegate self-modification to a peer (Round 17.2)
-  | 'delegate_dangerous_action'; // delegate dangerous action to a peer (Round 17.2)
+  | 'delegate_dangerous_action' // delegate dangerous action to a peer (Round 17.2)
+  | 'quarantine_branch'       // quarantine a lineage branch (Round 18.7)
+  | 'revoke_branch'           // revoke/terminate a lineage branch (Round 18.7)
+  | 'pause_selfmod'           // pause all self-modification capability (Round 19.3)
+  | 'resume_selfmod'          // resume self-modification capability (Round 19.3)
+  | 'restore_branch';         // restore a quarantined lineage branch (Round 19.3)
 
 // ── Risk Levels ───────────────────────────────────────────────────────
 
@@ -40,6 +45,11 @@ export const ACTION_RISK_MAP: Record<GovernanceActionKind, GovernanceRiskLevel> 
   delegate_task: 'high',
   delegate_selfmod: 'high',
   delegate_dangerous_action: 'critical',
+  quarantine_branch: 'critical',
+  revoke_branch: 'critical',
+  pause_selfmod: 'high',
+  resume_selfmod: 'medium',
+  restore_branch: 'high',
 };
 
 // ── Rollback Strategy ─────────────────────────────────────────────────
@@ -64,11 +74,13 @@ export const ACTION_ROLLBACK_MAP: Record<GovernanceActionKind, RollbackStrategyK
   delegate_task: 'revoke-delegation',
   delegate_selfmod: 'revoke-delegation',
   delegate_dangerous_action: 'revoke-delegation',
+  quarantine_branch: 'irreversible',
+  revoke_branch: 'irreversible',
+  pause_selfmod: 'irreversible',      // pause → resume is the inverse, not rollback
+  resume_selfmod: 'irreversible',     // resume → pause is the inverse, not rollback  
+  restore_branch: 'irreversible',     // restore is itself a recovery action
 };
 
-// ── Governance Decision ───────────────────────────────────────────────
-
-export type GovernanceDecision = 'auto_approved' | 'escalated' | 'denied';
 
 /** Why a governance decision was made — which layer blocked or escalated */
 export type GovernanceDenialLayer =
@@ -154,8 +166,6 @@ export interface GovernanceProposal {
   rollbackPlan: RollbackPlan;
   /** Current status */
   status: GovernanceStatus;
-  /** Decision (set after evaluation) */
-  decision?: GovernanceDecision;
   /** If denied, which layer and why */
   denialLayer?: GovernanceDenialLayer;
   denialReason?: string;
@@ -204,6 +214,8 @@ export interface GovernanceReceipt {
     delegatedPeerId?: string;
     /** Delegation scope ID (Round 17.2) */
     delegationScopeId?: string;
+    /** Branch control receipt timestamp (Round 18.7) */
+    branchControlReceiptId?: string;
   };
 }
 

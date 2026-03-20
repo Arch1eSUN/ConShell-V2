@@ -40,10 +40,10 @@ goals: [learn, grow]
 communication_style: direct
 ---`;
 
-function freshDb(): Database.Database {
+function freshDb() {
   const agentHome = join(tmpdir(), `conshell-test-${randomUUID()}`);
   mkdirSync(agentHome, { recursive: true });
-  return openDatabase({ agentHome, logger: silentLogger });
+  return { db: openDatabase({ agentHome, logger: silentLogger }), agentHome };
 }
 
 // ── Goal B: Owner Write/Read Boundary Tests ───────────────────────────
@@ -53,7 +53,8 @@ describe('Owner Write/Read Boundary (Round 14.8.2)', () => {
   let repo: SessionSummariesRepository;
 
   beforeEach(() => {
-    db = freshDb();
+    const fresh = freshDb();
+    db = fresh.db;
     repo = new SessionSummariesRepository(db);
   });
 
@@ -111,15 +112,18 @@ describe('Owner Write/Read Boundary (Round 14.8.2)', () => {
 
 describe('Kernel.getDiagnosticsOptions contract (Round 14.8.2)', () => {
   let db: Database.Database;
+  let agentHome: string;
 
   beforeEach(() => {
-    db = freshDb();
+    const fresh = freshDb();
+    db = fresh.db;
+    agentHome = fresh.agentHome;
   });
 
   afterEach(() => db.close());
 
   it('ContinuityService.getCurrentState returns live state when hydrated', () => {
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     const state = svc.getCurrentState();
@@ -132,12 +136,12 @@ describe('Kernel.getDiagnosticsOptions contract (Round 14.8.2)', () => {
   });
 
   it('ContinuityService.getCurrentState returns null when not hydrated', () => {
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     expect(svc.getCurrentState()).toBeNull();
   });
 
   it('live selfState reflects state after advanceForSession', () => {
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     const before = svc.getCurrentState();
@@ -155,7 +159,7 @@ describe('Kernel.getDiagnosticsOptions contract (Round 14.8.2)', () => {
   });
 
   it('live selfState reflects soul drift after advanceForSoulChange', () => {
-    const svc = new ContinuityService(db, silentLogger);
+    const svc = new ContinuityService(db, silentLogger, agentHome);
     svc.hydrate({ soulContent: SOUL_CONTENT, soulName: 'TestAgent' });
 
     expect(svc.getCurrentState()!.soulDrifted).toBe(false);

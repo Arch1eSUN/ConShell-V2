@@ -12,6 +12,8 @@
  * 5. Detect and report broken continuity (degraded mode)
  */
 import type Database from 'better-sqlite3';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Logger } from '../types/common.js';
 import {
   createIdentityAnchor,
@@ -71,12 +73,16 @@ export class ContinuityService {
   private logger: Logger;
   private anchorRepo: IdentityAnchorRepository;
   private recordRepo: ContinuityRecordRepository;
+  private agentHome: string;
+  private identityFile: string;
   private state: SelfState | null = null;
 
-  constructor(db: Database.Database, logger: Logger) {
+  constructor(db: Database.Database, logger: Logger, agentHome: string = process.cwd()) {
     this.logger = logger.child('continuity');
     this.anchorRepo = new IdentityAnchorRepository(db);
     this.recordRepo = new ContinuityRecordRepository(db);
+    this.agentHome = agentHome;
+    this.identityFile = join(this.agentHome, 'identity.json');
   }
 
   /**
@@ -90,12 +96,28 @@ export class ContinuityService {
     soulName: string;
     walletAddress?: string | null;
   }): SelfState {
-    const existingAnchor = this.anchorRepo.findFirst();
+    let existingAnchor = this.anchorRepo.findFirst();
+
+    if (!existingAnchor && existsSync(this.identityFile)) {
+      try {
+        const anchorData = JSON.parse(readFileSync(this.identityFile, 'utf-8'));
+        if (anchorData && anchorData.id) {
+          this.logger.info('Restored IdentityAnchor from flat file (DB was empty)');
+          this.anchorRepo.insert(anchorData);
+          existingAnchor = anchorData;
+        }
+      } catch (err) {
+        this.logger.warn('Failed to parse identity.json flat file', { error: String(err) });
+      }
+    }
 
     if (!existingAnchor) {
       // ── Genesis: first boot ever ──
       return this.performGenesis(params);
     }
+
+    // Ensure backup stays in sync
+    this.backupAnchor(existingAnchor);
 
     // ── Restart: returning self ──
     return this.performRestart(existingAnchor, params.soulContent);
@@ -189,6 +211,21 @@ export class ContinuityService {
   // ── Private ────────────────────────────────────────────────────────
 
   /**
+   * Backups the identity anchor to a flat file for cold-start reliability
+   */
+  private backupAnchor(anchor: IdentityAnchor) {
+    try {
+      if (existsSync(this.identityFile)) {
+        const currentData = readFileSync(this.identityFile, 'utf-8');
+        if (currentData === JSON.stringify(anchor, null, 2)) return;
+      }
+      writeFileSync(this.identityFile, JSON.stringify(anchor, null, 2), 'utf-8');
+    } catch (err) {
+      this.logger.warn('Failed to backup identity anchor to file', { error: String(err) });
+    }
+  }
+
+  /**
    * Refresh derived SelfState fields after any advance.
    * Ensures soulDrifted and explanation stay consistent with latest record.
    */
@@ -214,6 +251,7 @@ export class ContinuityService {
       walletAddress: params.walletAddress,
     });
     this.anchorRepo.insert(anchor);
+    this.backupAnchor(anchor);
 
     const record = createContinuityRecord({
       anchor,
@@ -336,6 +374,50 @@ export class ContinuityService {
     });
 
     return this.state;
+  }
+
+  // ── Scheduler Snapshot Persistence (Round 18.7) ────────────────────
+
+  private get schedulerSnapshotPath(): string {
+    return join(this.agentHome, 'scheduler-snapshot.json');
+  }
+
+  /**
+   * Persist a scheduler snapshot to disk.
+   * Called during shutdown or checkpoint to ensure operation continuity.
+   */
+  saveSchedulerSnapshot(snapshot: { tasks: readonly any[]; snapshotAt: string; pendingCount: number; overdueCount: number }): void {
+    try {
+      writeFileSync(this.schedulerSnapshotPath, JSON.stringify(snapshot, null, 2), 'utf-8');
+      this.logger.info('Scheduler snapshot saved', { pendingCount: snapshot.pendingCount, snapshotAt: snapshot.snapshotAt });
+    } catch (err) {
+      this.logger.error('Failed to save scheduler snapshot', { error: String(err) });
+    }
+  }
+
+  /**
+   * Load a previously persisted scheduler snapshot from disk.
+   * Returns null if no snapshot exists or if it's corrupted.
+   * Called during kernel boot to restore operation continuity.
+   */
+  loadSchedulerSnapshot(): { tasks: any[]; snapshotAt: string; pendingCount: number; overdueCount: number } | null {
+    try {
+      if (!existsSync(this.schedulerSnapshotPath)) {
+        this.logger.debug('No scheduler snapshot found — fresh start');
+        return null;
+      }
+      const raw = readFileSync(this.schedulerSnapshotPath, 'utf-8');
+      const snapshot = JSON.parse(raw);
+      if (!snapshot?.tasks || !snapshot?.snapshotAt) {
+        this.logger.warn('Scheduler snapshot malformed — ignoring');
+        return null;
+      }
+      this.logger.info('Scheduler snapshot loaded', { pendingCount: snapshot.pendingCount, snapshotAt: snapshot.snapshotAt });
+      return snapshot;
+    } catch (err) {
+      this.logger.error('Failed to load scheduler snapshot', { error: String(err) });
+      return null;
+    }
   }
 
   private ensureHydrated(): void {

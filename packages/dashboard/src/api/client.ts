@@ -1,5 +1,8 @@
 /**
  * API Client — Typed HTTP client for ConShell server.
+ *
+ * Round 19.5: Added posture & intervention endpoints for
+ * the Cinematic Control Plane.
  */
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4200';
@@ -176,6 +179,70 @@ class ApiClient {
   async getAgendaFactors(): Promise<AgendaFactorsResponse> {
     return this.request('/api/economic/agenda-factors');
   }
+
+  // ── Round 19.5: Posture & Interventions ─────────────────────
+
+  async getPosture(): Promise<PostureResponse> {
+    return this.request('/api/posture');
+  }
+
+  async getPostureHistory(limit: number = 20): Promise<PostureHistoryResponse> {
+    return this.request(`/api/posture/history?limit=${limit}`);
+  }
+
+  async getInterventions(): Promise<InterventionResponse> {
+    return this.request('/api/interventions');
+  }
+
+  // Round 19.9 G4: Diagnostics productization
+  async getDoctorReport(): Promise<DoctorResponse> {
+    return this.request('/api/posture/doctor');
+  }
+
+  async exportPosture(): Promise<PostureResponse> {
+    return this.request('/api/posture/export');
+  }
+
+  // ── Round 20.0 G5: Governance Inbox ────────────────────────
+
+  async getProposals(status?: string): Promise<{ proposals: GovernanceProposal[], count: number }> {
+    const query = status ? `?status=${status}` : '';
+    return this.request(`/api/governance/proposals${query}`);
+  }
+
+  async getProposalWhatIf(id: string): Promise<{ projection: WhatIfProjection }> {
+    return this.request(`/api/governance/proposals/${id}/whatif`);
+  }
+
+  async approveProposal(id: string): Promise<any> {
+    return this.request(`/api/governance/proposals/${id}/approve`, { method: 'POST' });
+  }
+
+  async applyProposal(id: string): Promise<any> {
+    return this.request(`/api/governance/proposals/${id}/apply`, { method: 'POST' });
+  }
+}
+
+// ── Governance Inbox Types ──────────────────────────────────
+
+export interface GovernanceProposal {
+  id: string;
+  actionKind: string;
+  target: string;
+  justification: string;
+  expectedCostCents: number;
+  status: string;
+  createdAt: string;
+}
+
+export interface WhatIfProjection {
+  proposalId: string;
+  budgetImpactCents: number;
+  expectedRoiCents: number;
+  resultingBalanceCents: number;
+  resultingSurvivalTier: string;
+  blockedWarnings: string[];
+  timestamp: string;
 }
 
 // ── Economic Control Surface Types ───────────────────────────
@@ -230,6 +297,92 @@ export interface AgendaFactorsResponse {
   survivalReserveWindowMinutes?: number;
   explanation?: string;
   timestamp?: string;
+}
+
+// ── Round 19.5: Posture Types ────────────────────────────────
+
+export interface PostureIdentity {
+  mode: string;
+  chainValid: boolean;
+  chainLength: number;
+  soulDrifted: boolean;
+  fingerprint: string;
+}
+
+export interface PostureEconomic {
+  survivalTier: string;
+  balanceCents: number;
+  burnRateCentsPerDay: number;
+  runwayDays: number;
+  profitabilityRatio: number;
+}
+
+export interface PostureLineage {
+  activeChildren: number;
+  degradedChildren: number;
+  totalFundingAllocated: number;
+  totalFundingSpent: number;
+  healthScore: number;
+}
+
+export interface PostureCollective {
+  totalPeers: number;
+  trustedPeers: number;
+  degradedPeers: number;
+  delegationSuccessRate: number;
+}
+
+export interface PostureGovernance {
+  pendingProposals: number;
+  recentVerdicts: number;
+  selfModQuarantined: boolean;
+}
+
+// Round 19.8: Agenda truth — canonical from backend
+export interface PostureAgenda {
+  scheduled: number;
+  deferred: number;
+  active: number;
+  blocked: number;
+  nextCommitmentHint: string;
+  priorityReason: string;
+}
+
+export interface PostureResponse {
+  agentId: string;
+  timestamp: string;
+  version: string;
+  identity: PostureIdentity;
+  economic: PostureEconomic;
+  lineage: PostureLineage;
+  collective: PostureCollective;
+  governance: PostureGovernance;
+  agenda: PostureAgenda;
+  overallHealthScore: number;
+  healthVerdict: 'healthy' | 'degraded' | 'critical' | 'terminal';
+}
+
+export interface PostureHistoryResponse {
+  snapshots: PostureResponse[];
+}
+
+// Round 19.9 G4: Doctor diagnostic response
+export interface DoctorResponse {
+  report: string;
+  snapshot: PostureResponse;
+}
+
+export interface InterventionItem {
+  id: string;
+  severity: 'info' | 'warning' | 'critical';
+  dimension: 'identity' | 'runtime' | 'survival' | 'governance' | 'collective';
+  title: string;
+  description: string;
+  action?: string;
+}
+
+export interface InterventionResponse {
+  interventions: InterventionItem[];
 }
 
 export const api = new ApiClient();

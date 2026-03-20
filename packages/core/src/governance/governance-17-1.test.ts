@@ -34,8 +34,12 @@ function createMockPolicy(decision: 'allow' | 'deny' | 'escalate' = 'allow', rul
 
 function createMockSelfMod() {
   return {
+    propose: vi.fn().mockResolvedValue({ id: 'mod_171', file: 'test.ts', timestamp: Date.now() }),
+    approve: vi.fn().mockResolvedValue(true),
+    apply: vi.fn().mockResolvedValue({ id: 'mod_171', file: 'test.ts', timestamp: Date.now() }),
     modify: vi.fn().mockResolvedValue({ id: 'mod_171', file: 'test.ts', timestamp: Date.now() }),
     rollback: vi.fn().mockResolvedValue(true),
+    verify: vi.fn(),
     stats: () => ({ total: 0, lastHour: 0, rolledBack: 0 }),
   };
 }
@@ -46,6 +50,31 @@ function createMockMultiAgent() {
     terminate: vi.fn().mockResolvedValue(true),
     list: () => [],
     stats: () => ({ totalChildren: 0 }),
+  };
+}
+
+function createMockLineage() {
+  return {
+    createChild: vi.fn().mockResolvedValue({
+      id: 'lineage_171',
+      childId: 'child_171',
+      status: 'active',
+      spec: { name: 'test-child', task: 'test' },
+    }),
+    getByChildId: vi.fn().mockReturnValue(null),
+    recallChild: vi.fn().mockResolvedValue({ success: true }),
+    terminateChild: vi.fn().mockResolvedValue({ success: true }),
+    attachFunding: vi.fn(),
+  };
+}
+
+function createMockEconomic(allowed: boolean = true) {
+  return {
+    survivalTier: () => 'normal' as any,
+    isEmergency: () => false,
+    mustPreserveActive: () => false,
+    currentBalanceCents: () => 100_00,
+    canAcceptAction: vi.fn().mockReturnValue({ allowed, reason: allowed ? 'ok' : 'budget exceeded' }),
   };
 }
 
@@ -63,9 +92,9 @@ function createService(overrides: Partial<GovernanceServiceOptions> = {}): Gover
     policy: createMockPolicy(),
     selfmod: createMockSelfMod() as any,
     multiagent: createMockMultiAgent() as any,
+    lineage: createMockLineage() as any,
     logger: mockLogger,
-    dailyBudgetCents: 100_00,
-    dailySpentCents: 0,
+    economic: createMockEconomic(true),
     ...overrides,
   });
 }
@@ -170,7 +199,7 @@ describe('V3: Replication receipt linkage', () => {
 describe('V4: Selfmod receipt linkage', () => {
   it('apply receipt includes verdictId for selfmod', async () => {
     const svc = createService();
-    const p = svc.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test' });
+    const p = svc.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test', payload: { file: 'test.ts', content: 'v2' } });
     const verdict = svc.evaluate(p.id);
     const receipt = await svc.apply(p.id);
     expect(receipt.result).toBe('success');
@@ -179,7 +208,7 @@ describe('V4: Selfmod receipt linkage', () => {
 
   it('verdict has executionReceiptId after selfmod apply', async () => {
     const svc = createService();
-    const p = svc.propose({ actionKind: 'selfmod', target: 'x.ts', justification: 'test' });
+    const p = svc.propose({ actionKind: 'selfmod', target: 'x.ts', justification: 'test', payload: { file: 'x.ts', content: 'v2' } });
     svc.evaluate(p.id);
     const receipt = await svc.apply(p.id);
     const storedVerdict = svc.getVerdict(p.id);
@@ -268,7 +297,7 @@ describe('V7: Branch control verdict linkage (contract)', () => {
 describe('V8: getTraceChain()', () => {
   it('returns complete trace for proposed+evaluated+applied', async () => {
     const svc = createService();
-    const p = svc.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test' });
+    const p = svc.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test', payload: { file: 'test.ts', content: 'v2' } });
     svc.evaluate(p.id);
     await svc.apply(p.id);
 
@@ -288,7 +317,7 @@ describe('V8: getTraceChain()', () => {
 
   it('trace receipts include verdictId linkage', async () => {
     const svc = createService();
-    const p = svc.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test' });
+    const p = svc.propose({ actionKind: 'selfmod', target: 'test.ts', justification: 'test', payload: { file: 'test.ts', content: 'v2' } });
     const verdict = svc.evaluate(p.id);
     await svc.apply(p.id);
 

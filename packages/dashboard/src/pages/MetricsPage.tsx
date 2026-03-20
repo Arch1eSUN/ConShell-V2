@@ -1,7 +1,5 @@
-/**
- * MetricsPage — 推理成本+使用量
- */
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { BarChart3, MessageSquare, Coins, Brain, Zap, RefreshCw } from 'lucide-react';
 import { api } from '../api';
 
 export function MetricsPage() {
@@ -10,11 +8,10 @@ export function MetricsPage() {
 
   const load = async () => {
     setRefreshing(true);
-    try {
-      const data = await api.getMetrics();
-      setMetrics(data);
-    } catch (err) {
-      console.error('Failed to load metrics:', err);
+    try { setMetrics(await api.getMetrics()); } 
+    catch (err) { 
+      console.error(err); 
+      setMetrics({ totalTurns: 0, totalSpentCents: 0, memoryCount: 0, toolCallCount: 0, dailySpentCents: 0, dailyBudgetCents: 100 }); 
     }
     setRefreshing(false);
   };
@@ -25,56 +22,77 @@ export function MetricsPage() {
     ? Math.min(100, ((metrics.dailySpentCents / Math.max(1, metrics.dailyBudgetCents)) * 100))
     : 0;
 
+  const statCards = [
+    { icon: MessageSquare, label: 'Total Turns', value: metrics?.totalTurns ?? 0, color: 'blue' },
+    { icon: Coins, label: 'Total Spent', value: `$${((metrics?.totalSpentCents ?? 0) / 100).toFixed(2)}`, color: 'amber' },
+    { icon: Brain, label: 'Memories', value: metrics?.memoryCount ?? 0, color: 'rose' },
+    { icon: Zap, label: 'Tool Calls', value: metrics?.toolCallCount ?? 0, color: 'green' },
+  ];
+
   return (
     <div>
-      <div style={s.header}>
-        <h1 style={s.title}>Metrics</h1>
-        <button style={s.refreshBtn} onClick={load} disabled={refreshing}>
-          {refreshing ? '↻' : '🔄'} Refresh
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-lg)' }}>
+        <div>
+          <header className="page-header" style={{ marginBottom: 0 }}>
+            <span className="page-label label">Analytics</span>
+            <h2 className="page-title">Metrics</h2>
+          </header>
+        </div>
+        <button onClick={load} disabled={refreshing} style={{
+          padding: '8px 16px', borderRadius: 'var(--radius)', border: '1px solid var(--border-strong)',
+          background: 'transparent', color: 'var(--ink-secondary)', cursor: 'pointer', fontSize: 13,
+          display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-ui)',
+        }}>
+          <RefreshCw size={14} className={refreshing ? 'spinning' : ''} /> Refresh
         </button>
       </div>
 
-      {!metrics ? (
-        <div style={s.loading}>Loading metrics…</div>
-      ) : (
+      {!metrics ? <div className="skeleton" style={{ height: 200, borderRadius: 10 }} /> : (
         <>
           {/* Budget bar */}
-          <div style={s.budgetCard}>
-            <div style={s.budgetHeader}>
-              <span>Daily Budget</span>
-              <span style={s.budgetAmount}>${(metrics.dailySpentCents / 100).toFixed(2)} / ${(metrics.dailyBudgetCents / 100).toFixed(2)}</span>
+          <div className="card" style={{ marginBottom: 'var(--space-lg)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+              <span className="data-label">Daily Budget</span>
+              <span className="mono" style={{ fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>
+                ${(metrics.dailySpentCents / 100).toFixed(2)} / ${(metrics.dailyBudgetCents / 100).toFixed(2)}
+              </span>
             </div>
-            <div style={s.barBg}>
+            <div style={{ height: 8, background: 'var(--surface)', borderRadius: 4, overflow: 'hidden' }}>
               <div style={{
-                ...s.barFill,
-                width: `${budgetPct}%`,
-                background: budgetPct > 80 ? '#ef4444' : budgetPct > 50 ? '#f59e0b' : '#22c55e',
+                height: '100%', borderRadius: 4, transition: 'width 0.5s ease', width: `${budgetPct}%`,
+                background: budgetPct > 80 ? 'var(--rose)' : budgetPct > 50 ? 'var(--amber)' : 'var(--green)',
               }} />
             </div>
-            <div style={s.budgetPct}>{budgetPct.toFixed(0)}% used</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-muted)', marginTop: 6, textAlign: 'right' }}>{budgetPct.toFixed(0)}% used</div>
           </div>
 
           {/* Stats grid */}
-          <div style={s.grid}>
-            <MetricCard icon="💬" label="Total Turns" value={metrics.totalTurns} />
-            <MetricCard icon="💰" label="Total Spent" value={`$${(metrics.totalSpentCents / 100).toFixed(2)}`} />
-            <MetricCard icon="🧠" label="Memories" value={metrics.memoryCount} />
-            <MetricCard icon="⚡" label="Tool Calls" value={metrics.toolCallCount} />
+          <div className="data-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', marginBottom: 'var(--space-xl)' }}>
+            {statCards.map(card => (
+              <div key={card.label} className="card" style={{ textAlign: 'center' }}>
+                <card.icon size={20} style={{ color: `var(--${card.color})`, marginBottom: 8 }} />
+                <div className="big-number">{card.value}</div>
+                <div className="data-label">{card.label}</div>
+              </div>
+            ))}
           </div>
 
           {/* Cost breakdown */}
           {metrics.costBreakdown && (
-            <div style={s.section}>
-              <h2 style={s.sectionTitle}>Cost Breakdown by Provider</h2>
-              <div style={s.table}>
-                <div style={s.tableHeader}>
-                  <span>Provider</span><span>Requests</span><span>Cost</span>
+            <div className="card">
+              <div className="card-header">
+                <div className="card-icon blue"><BarChart3 size={16} /></div>
+                <span className="card-title">Cost by Provider</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', padding: '8px 0', borderBottom: '1px solid var(--border-strong)' }}>
+                  <span className="data-label">Provider</span><span className="data-label">Requests</span><span className="data-label">Cost</span>
                 </div>
-                {Object.entries(metrics.costBreakdown as Record<string, { requests: number; costCents: number }>).map(([name, data]) => (
-                  <div key={name} style={s.tableRow}>
-                    <span style={s.providerName}>{name}</span>
-                    <span>{data.requests}</span>
-                    <span>${(data.costCents / 100).toFixed(3)}</span>
+                {Object.entries(metrics.costBreakdown as Record<string, { requests: number; costCents: number }>).map(([name, d]) => (
+                  <div key={name} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', padding: '10px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
+                    <span style={{ fontWeight: 500, color: 'var(--ink)' }}>{name}</span>
+                    <span className="mono" style={{ color: 'var(--ink-secondary)' }}>{d.requests}</span>
+                    <span className="mono" style={{ color: 'var(--ink-secondary)' }}>${(d.costCents / 100).toFixed(3)}</span>
                   </div>
                 ))}
               </div>
@@ -85,40 +103,3 @@ export function MetricsPage() {
     </div>
   );
 }
-
-function MetricCard({ icon, label, value }: { icon: string; label: string; value: any }) {
-  return (
-    <div style={s.card}>
-      <div style={{ fontSize: 24 }}>{icon}</div>
-      <div style={{ fontSize: 28, fontWeight: 700, color: '#f4f4f5' }}>{value}</div>
-      <div style={{ fontSize: 13, color: '#71717a', marginTop: 4 }}>{label}</div>
-    </div>
-  );
-}
-
-const s: Record<string, React.CSSProperties> = {
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 },
-  title: { fontSize: 28, fontWeight: 700, color: '#f4f4f5', margin: 0 },
-  refreshBtn: {
-    padding: '8px 16px', borderRadius: 8, border: '1px solid #27272a',
-    background: 'transparent', color: '#a1a1aa', cursor: 'pointer', fontSize: 13,
-  },
-  loading: { color: '#71717a', padding: 32 },
-  budgetCard: { padding: 20, background: 'rgba(255,255,255,0.02)', borderRadius: 12, border: '1px solid #1e1e2e', marginBottom: 24 },
-  budgetHeader: { display: 'flex', justifyContent: 'space-between', fontSize: 14, color: '#a1a1aa', marginBottom: 12 },
-  budgetAmount: { fontWeight: 600, color: '#f4f4f5' },
-  barBg: { height: 8, background: '#27272a', borderRadius: 4, overflow: 'hidden' },
-  barFill: { height: '100%', borderRadius: 4, transition: 'width 0.5s ease' },
-  budgetPct: { fontSize: 12, color: '#71717a', marginTop: 8, textAlign: 'right' as const },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16, marginBottom: 32 },
-  card: {
-    background: 'rgba(255,255,255,0.03)', border: '1px solid #1e1e2e',
-    borderRadius: 12, padding: '20px 16px', textAlign: 'center' as const,
-  },
-  section: { marginTop: 32 },
-  sectionTitle: { fontSize: 18, fontWeight: 600, marginBottom: 16, color: '#d4d4d8' },
-  table: { borderRadius: 12, border: '1px solid #1e1e2e', overflow: 'hidden' },
-  tableHeader: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', padding: '12px 16px', background: 'rgba(255,255,255,0.04)', fontSize: 12, color: '#71717a', fontWeight: 600, textTransform: 'uppercase' as const },
-  tableRow: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', padding: '12px 16px', borderTop: '1px solid #1e1e2e', fontSize: 14, color: '#d4d4d8' },
-  providerName: { fontWeight: 500 },
-};

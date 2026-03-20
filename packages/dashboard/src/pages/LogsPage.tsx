@@ -1,18 +1,8 @@
-/**
- * LogsPage — WebSocket实时日志
- */
-import React, { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState } from 'react';
+import { ScrollText } from 'lucide-react';
 
-interface LogMessage {
-  type: string;
-  data: any;
-  timestamp: number;
-}
-
-interface LogsPageProps {
-  messages: LogMessage[];
-}
-
+interface LogMessage { type: string; data: any; timestamp: number; }
+interface LogsPageProps { messages: LogMessage[]; }
 type LogLevel = 'all' | 'info' | 'warn' | 'error' | 'debug';
 
 export function LogsPage({ messages }: LogsPageProps) {
@@ -20,80 +10,54 @@ export function LogsPage({ messages }: LogsPageProps) {
   const [autoScroll, setAutoScroll] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (autoScroll) endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, autoScroll]);
+  useEffect(() => { if (autoScroll) endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, autoScroll]);
 
-  const filtered = filter === 'all'
-    ? messages
-    : messages.filter(m => (m.data?.level ?? m.type) === filter);
+  const filtered = filter === 'all' ? messages : messages.filter(m => (m.data?.level ?? m.type) === filter);
+
+  const levelColor = (l: string) => {
+    switch (l) { case 'error': return 'var(--rose)'; case 'warn': return 'var(--amber)'; case 'info': return 'var(--blue)'; case 'debug': return 'var(--ink-muted)'; default: return 'var(--ink-secondary)'; }
+  };
 
   return (
-    <div style={s.container}>
-      <div style={s.header}>
-        <h1 style={s.title}>Logs</h1>
-        <div style={s.controls}>
-          <select style={s.select} value={filter} onChange={e => setFilter(e.target.value as LogLevel)}>
-            <option value="all">All</option>
-            <option value="info">Info</option>
-            <option value="warn">Warning</option>
-            <option value="error">Error</option>
-            <option value="debug">Debug</option>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 96px)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-md)' }}>
+        <div className="card-header" style={{ margin: 0 }}>
+          <div className="card-icon blue"><ScrollText size={16} /></div>
+          <span className="card-title">Logs</span>
+        </div>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+          <select value={filter} onChange={e => setFilter(e.target.value as LogLevel)} style={{
+            padding: '6px 12px', borderRadius: 'var(--radius)', border: '1px solid var(--border-strong)',
+            background: 'var(--surface)', color: 'var(--ink-secondary)', fontSize: 13, fontFamily: 'var(--font-ui)',
+          }}>
+            <option value="all">All</option><option value="info">Info</option><option value="warn">Warning</option><option value="error">Error</option><option value="debug">Debug</option>
           </select>
-          <label style={s.toggle}>
-            <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
-            Auto-scroll
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--ink-muted)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} /> Auto-scroll
           </label>
         </div>
       </div>
 
-      <div style={s.logContainer}>
+      <div style={{
+        flex: 1, overflow: 'auto', background: 'var(--sidebar-bg)', borderRadius: 'var(--radius-lg)',
+        border: '1px solid var(--border-strong)', padding: 12, fontFamily: 'var(--font-mono)', fontSize: 13,
+      }}>
         {filtered.length === 0 ? (
-          <div style={s.empty}>No log entries yet. Logs stream via WebSocket.</div>
-        ) : (
-          filtered.map((msg, i) => {
-            const level = msg.data?.level ?? msg.type;
-            const time = new Date(msg.timestamp).toLocaleTimeString();
-            const text = msg.data?.message ?? msg.data?.text ?? JSON.stringify(msg.data);
-            return (
-              <div key={i} style={s.logLine}>
-                <span style={s.time}>{time}</span>
-                <span style={{ ...s.level, color: levelColor(level) }}>{(level ?? 'LOG').toUpperCase().padEnd(5)}</span>
-                <span style={s.text}>{text}</span>
-              </div>
-            );
-          })
-        )}
+          <div style={{ color: 'var(--sidebar-muted)', textAlign: 'center', padding: 48 }}>No log entries yet. Logs stream via WebSocket.</div>
+        ) : filtered.map((msg, i) => {
+          const level = msg.data?.level ?? msg.type;
+          const time = new Date(msg.timestamp).toLocaleTimeString();
+          const text = msg.data?.message ?? msg.data?.text ?? JSON.stringify(msg.data);
+          return (
+            <div key={i} style={{ display: 'flex', gap: 12, padding: '3px 0', lineHeight: 1.6 }}>
+              <span style={{ color: 'var(--sidebar-muted)', flexShrink: 0 }}>{time}</span>
+              <span style={{ fontWeight: 600, flexShrink: 0, width: 50, color: levelColor(level) }}>{(level ?? 'LOG').toUpperCase().padEnd(5)}</span>
+              <span style={{ color: 'var(--sidebar-text-hover)', wordBreak: 'break-all' }}>{text}</span>
+            </div>
+          );
+        })}
         <div ref={endRef} />
       </div>
     </div>
   );
 }
-
-function levelColor(level: string): string {
-  switch (level) {
-    case 'error': return '#ef4444';
-    case 'warn': return '#f59e0b';
-    case 'info': return '#3b82f6';
-    case 'debug': return '#6b7280';
-    default: return '#a1a1aa';
-  }
-}
-
-const s: Record<string, React.CSSProperties> = {
-  container: { display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)' },
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  title: { fontSize: 28, fontWeight: 700, color: '#f4f4f5', margin: 0 },
-  controls: { display: 'flex', gap: 16, alignItems: 'center' },
-  select: { padding: '6px 12px', borderRadius: 6, border: '1px solid #27272a', background: '#18181b', color: '#a1a1aa', fontSize: 13 },
-  toggle: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#a1a1aa', cursor: 'pointer' },
-  logContainer: {
-    flex: 1, overflow: 'auto', background: '#09090b', borderRadius: 12,
-    border: '1px solid #1e1e2e', padding: 12, fontFamily: "'JetBrains Mono', monospace", fontSize: 13,
-  },
-  empty: { color: '#52525b', textAlign: 'center' as const, padding: 48 },
-  logLine: { display: 'flex', gap: 12, padding: '3px 0', lineHeight: 1.6 },
-  time: { color: '#52525b', flexShrink: 0 },
-  level: { fontWeight: 600, flexShrink: 0, width: 50 },
-  text: { color: '#d4d4d8', wordBreak: 'break-all' as const },
-};

@@ -106,6 +106,10 @@ export interface Commitment {
   blockedReason?: string;
   failedReason?: string;
 
+  // ── Recovery tracking (Round 18.6) ──
+  /** True if this commitment was active during a crash/restart and recovered */
+  recoveredFromCrash?: boolean;
+
   // ── Counters ──
   /** Number of QueuedTasks materialized from this commitment */
   materializedTaskCount: number;

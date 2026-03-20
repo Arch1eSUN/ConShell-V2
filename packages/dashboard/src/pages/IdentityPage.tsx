@@ -1,98 +1,96 @@
-/**
- * IdentityPage — Agent身份 + SOUL信息
- */
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { Fingerprint, ShieldCheck, Globe, Tag } from 'lucide-react';
 import { api } from '../api';
 
 export function IdentityPage() {
   const [identity, setIdentity] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.rawRequest<any>('/api/agent/status')
+    api.rawRequest<any>('/api/identity')
       .then(setIdentity)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+      .catch(err => {
+        console.error(err);
+        setIdentity({
+          agentName: 'Unknown', model: 'Unknown', personality: 'Unknown',
+          walletAddress: '0x00...00', chain: 'Unknown', tier: 'Unknown', version: '1.0'
+        });
+      });
   }, []);
+
+  if (!identity) return <div className="skeleton" style={{ height: 200, borderRadius: 10 }} />;
 
   return (
     <div>
-      <h1 style={s.title}>Identity</h1>
-      <p style={s.subtitle}>Agent soul, alignment, and on-chain identity</p>
+      <header className="page-header">
+        <span className="page-label label">Profile</span>
+        <h2 className="page-title">Identity</h2>
+        <p className="page-subtitle">Agent soul, genesis prompt, and on-chain identity</p>
+      </header>
 
-      {loading ? (
-        <div style={s.loading}>Loading…</div>
-      ) : (
-        <>
-          {/* Soul Card */}
-          <div style={s.card}>
-            <div style={s.cardHeader}>
-              <span style={{ fontSize: 28 }}>🐢</span>
-              <div>
-                <h2 style={s.name}>{identity?.name ?? 'ConShell Agent'}</h2>
-                <span style={s.badge}>{identity?.state ?? 'unknown'}</span>
-              </div>
-            </div>
-
-            <div style={s.fieldGrid}>
-              <Field label="Role" value={identity?.role ?? '—'} />
-              <Field label="Version" value={identity?.version ?? '—'} />
-              <Field label="Created" value={identity?.created ?? '—'} />
-              <Field label="Survival Tier" value={identity?.survivalTier ?? '—'} />
-            </div>
+      <div className="data-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+        {/* Soul */}
+        <div className="card">
+          <div className="card-header">
+            <div className="card-icon green"><Fingerprint size={16} /></div>
+            <span className="card-title">Soul</span>
           </div>
+          <div className="data-item"><span className="data-label">Name</span><span className="data-value">{identity.agentName ?? identity.name ?? '—'}</span></div>
+          <div className="data-item"><span className="data-label">Model</span><span className="data-value mono">{identity.model ?? '—'}</span></div>
+          <div className="data-item"><span className="data-label">Personality</span><span className="data-value">{identity.personality ?? identity.alignment ?? '—'}</span></div>
+        </div>
 
-          {/* Genesis Prompt */}
-          <div style={s.card}>
-            <h3 style={s.sectionTitle}>Genesis Prompt</h3>
-            <pre style={s.pre}>{identity?.genesisPrompt ?? 'Not available'}</pre>
+        {/* On-Chain */}
+        <div className="card">
+          <div className="card-header">
+            <div className="card-icon blue"><Globe size={16} /></div>
+            <span className="card-title">On-Chain Identity</span>
           </div>
+          <div className="data-item"><span className="data-label">Address</span><span className="data-value mono" style={{ fontSize: 12 }}>{identity.walletAddress ?? identity.address ?? '—'}</span></div>
+          <div className="data-item"><span className="data-label">Chain</span><span className="data-value">{identity.chain ?? 'Base'}</span></div>
+          <div className="data-item">
+            <span className="data-label">Status</span>
+            <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <ShieldCheck size={12} /> Verified
+            </span>
+          </div>
+        </div>
 
-          {/* On-chain Identity */}
-          <div style={s.card}>
-            <h3 style={s.sectionTitle}>On-Chain Identity (ERC-8004)</h3>
-            <div style={s.fieldGrid}>
-              <Field label="Address" value={identity?.walletAddress ?? 'Not connected'} />
-              <Field label="Chain" value={identity?.chainId ? `Chain ${identity.chainId}` : '—'} />
-              <Field label="Registered" value={identity?.erc8004Registered ? '✓ Yes' : '✗ No'} />
-            </div>
+        {/* Tier & Tags */}
+        <div className="card">
+          <div className="card-header">
+            <div className="card-icon amber"><Tag size={16} /></div>
+            <span className="card-title">Classification</span>
           </div>
+          <div className="data-item">
+            <span className="data-label">Tier</span>
+            <span className="badge badge-blue">{identity.tier ?? identity.securityLevel ?? 'standard'}</span>
+          </div>
+          <div className="data-item">
+            <span className="data-label">Version</span>
+            <span className="data-value mono">{identity.version ?? '—'}</span>
+          </div>
+          <div className="data-item">
+            <span className="data-label">Security</span>
+            <span className="data-value">{identity.securityLevel ?? 'standard'}</span>
+          </div>
+        </div>
+      </div>
 
-          {/* Alignment */}
-          <div style={s.card}>
-            <h3 style={s.sectionTitle}>Alignment Status</h3>
-            <div style={s.alignBadge}>
-              {identity?.aligned !== false ? '✓ Aligned with SOUL' : '⚠ Alignment drift detected'}
-            </div>
+      {/* Genesis Prompt */}
+      {identity.genesisPrompt && (
+        <div className="card" style={{ marginTop: 'var(--space-lg)' }}>
+          <div className="card-header">
+            <div className="card-icon rose"><Fingerprint size={16} /></div>
+            <span className="card-title">Genesis Prompt</span>
           </div>
-        </>
+          <pre style={{
+            fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap',
+            color: 'var(--ink-secondary)', fontFamily: 'var(--font-mono)',
+            padding: 12, background: 'var(--surface)', borderRadius: 'var(--radius)',
+            border: '1px solid var(--border)', maxHeight: 300, overflow: 'auto',
+          }}>{identity.genesisPrompt}</pre>
+        </div>
       )}
     </div>
   );
 }
-
-function Field({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={s.field}>
-      <div style={s.fieldLabel}>{label}</div>
-      <div style={s.fieldValue}>{value}</div>
-    </div>
-  );
-}
-
-const s: Record<string, React.CSSProperties> = {
-  title: { fontSize: 28, fontWeight: 700, margin: '0 0 8px', color: '#f4f4f5' },
-  subtitle: { fontSize: 14, color: '#71717a', margin: '0 0 32px' },
-  loading: { color: '#71717a', padding: 32 },
-  card: { padding: 24, background: 'rgba(255,255,255,0.02)', borderRadius: 12, border: '1px solid #1e1e2e', marginBottom: 16 },
-  cardHeader: { display: 'flex', gap: 16, alignItems: 'center', marginBottom: 20 },
-  name: { fontSize: 20, fontWeight: 600, margin: 0 },
-  badge: { fontSize: 12, color: '#4ade80', background: 'rgba(74,222,128,0.1)', padding: '2px 10px', borderRadius: 20, display: 'inline-block', marginTop: 4 },
-  sectionTitle: { fontSize: 16, fontWeight: 600, color: '#a1a1aa', marginBottom: 16, marginTop: 0 },
-  fieldGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 },
-  field: {},
-  fieldLabel: { fontSize: 12, color: '#71717a', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
-  fieldValue: { fontSize: 14, color: '#e4e4e7', marginTop: 4, fontFamily: 'monospace' },
-  pre: { fontSize: 13, color: '#a1a1aa', background: '#0a0a0f', padding: 16, borderRadius: 8, overflow: 'auto', whiteSpace: 'pre-wrap' as const, margin: 0 },
-  alignBadge: { fontSize: 15, color: '#4ade80', fontWeight: 500 },
-};

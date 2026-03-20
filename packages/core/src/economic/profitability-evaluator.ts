@@ -69,9 +69,24 @@ export const DEFAULT_THRESHOLDS: ProfitabilityThresholds = {
 
 export class ProfitabilityEvaluator {
   private thresholds: ProfitabilityThresholds;
+  private coupling?: import('./settlement-system-coupling.js').SettlementSystemCoupling;
 
-  constructor(thresholds?: Partial<ProfitabilityThresholds>) {
+  constructor(thresholds?: Partial<ProfitabilityThresholds>, coupling?: import('./settlement-system-coupling.js').SettlementSystemCoupling) {
     this.thresholds = { ...DEFAULT_THRESHOLDS, ...thresholds };
+    this.coupling = coupling;
+  }
+
+  private getDynamicThresholds(): ProfitabilityThresholds {
+    let t = this.thresholds;
+    if (this.coupling) {
+      const truth = this.coupling.getSystemTruth();
+      if (truth.systemHealthIndicator === 'critical') {
+        t = { ...t, maxCostToBalanceRatio: 0.2, criticalRunwayDays: 14, deferNetValueFloorCents: 0 };
+      } else if (truth.systemHealthIndicator === 'under_pressure') {
+        t = { ...t, maxCostToBalanceRatio: 0.35, criticalRunwayDays: 10, deferNetValueFloorCents: -200 };
+      }
+    }
+    return t;
   }
 
   /**
@@ -85,6 +100,8 @@ export class ProfitabilityEvaluator {
     const revenuePositive = netValue > 0;
     const survivalValue = this.computeSurvivalValue(commitment, projection);
     const strategicValue = this.computeStrategicValue(commitment);
+
+    const thresholds = this.getDynamicThresholds();
 
     // ── Rule 1: mustPreserve always admitted ──
     if (commitment.mustPreserve) {
@@ -103,7 +120,7 @@ export class ProfitabilityEvaluator {
     }
 
     // ── Rule 2: Critical/terminal runway — only revenue or survival tasks ──
-    if (projection.runwayDays <= this.thresholds.criticalRunwayDays) {
+    if (projection.runwayDays <= thresholds.criticalRunwayDays) {
       if (commitment.revenueBearing && revenuePositive) {
         return this.buildResult(commitment, 'admit', `Revenue-positive task admitted under critical runway (${projection.runwayDays}d)`, {
           revenuePositive: true,
@@ -137,9 +154,9 @@ export class ProfitabilityEvaluator {
     // ── Rule 3: Cost exceeds balance threshold — reject ──
     if (
       projection.currentBalanceCents > 0 &&
-      expectedCost > projection.currentBalanceCents * this.thresholds.maxCostToBalanceRatio
+      expectedCost > projection.currentBalanceCents * thresholds.maxCostToBalanceRatio
     ) {
-      return this.buildResult(commitment, 'reject', `Cost (${expectedCost}¢) exceeds ${(this.thresholds.maxCostToBalanceRatio * 100).toFixed(0)}% of balance (${projection.currentBalanceCents}¢)`, {
+      return this.buildResult(commitment, 'reject', `Cost (${expectedCost}¢) exceeds ${(thresholds.maxCostToBalanceRatio * 100).toFixed(0)}% of balance (${projection.currentBalanceCents}¢)`, {
         revenuePositive,
         reserveCriticalOverride: false,
         mustDoDespiteLoss: false,
@@ -154,8 +171,8 @@ export class ProfitabilityEvaluator {
     }
 
     // ── Rule 4: Negative net value below floor — defer ──
-    if (netValue < this.thresholds.deferNetValueFloorCents) {
-      return this.buildResult(commitment, 'defer', `Net value (${netValue}¢) below defer floor (${this.thresholds.deferNetValueFloorCents}¢)`, {
+    if (netValue < thresholds.deferNetValueFloorCents) {
+      return this.buildResult(commitment, 'defer', `Net value (${netValue}¢) below defer floor (${thresholds.deferNetValueFloorCents}¢)`, {
         revenuePositive: false,
         reserveCriticalOverride: false,
         mustDoDespiteLoss: false,

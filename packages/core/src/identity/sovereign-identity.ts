@@ -19,7 +19,7 @@ import type { SoulData } from '../soul/system.js';
 import {
   rotateIdentity, revokeIdentity, recoverIdentity,
   createGenesisRecord, resolveActive,
-  serializeRecords, restoreRecords,
+  serializeRecords, restoreRecordsHardened,
   type IdentityRecord, type IdentityStatus, type IdentityRecordSnapshot,
 } from './identity-lifecycle.js';
 import type { ClaimRegistry } from './identity-claims.js';
@@ -426,9 +426,9 @@ export class SovereignIdentityService {
    * Returns true if restoration succeeded.
    */
   restore(snapshot: { records: unknown; status?: string }): boolean {
-    const records = restoreRecords(snapshot.records);
-    if (!records) return false;
-    this.identityRecords = records;
+    const result = restoreRecordsHardened(snapshot.records);
+    if (!result.valid) return false;
+    this.identityRecords = result.records;
     if (snapshot.status && ['active', 'degraded', 'recovering', 'rotated', 'revoked'].includes(snapshot.status)) {
       this.identityStatus = snapshot.status as SovereignIdentityStatus;
     }

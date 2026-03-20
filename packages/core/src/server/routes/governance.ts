@@ -68,6 +68,19 @@ export function registerGovernanceRoutes(
     }
   });
 
+  // ── GET /api/governance/proposals/:id/whatif — What-If Projection ──
+  server.get('/api/governance/proposals/:id/whatif', async (req: IncomingMessage, res: ServerResponse, _body: string) => {
+    try {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const segments = url.pathname.split('/');
+      const id = segments[segments.length - 2]!; // proposals/:id/whatif
+      const whatIf = governance.whatIf(id);
+      server.sendJson(res, 200, { projection: whatIf });
+    } catch (err) {
+      server.sendJson(res, 500, { error: String(err) });
+    }
+  });
+
   // ── POST /api/governance/proposals/:id/apply — Apply an approved proposal ──
   server.post('/api/governance/proposals/:id/apply', async (req: IncomingMessage, res: ServerResponse, _body: string) => {
     try {

@@ -1,154 +1,93 @@
-/**
- * MemoryPage — Agent记忆管理
- */
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { Brain, Flame, Thermometer, Snowflake, Database, Search } from 'lucide-react';
 import { api } from '../api';
 
-interface Memory {
-  id: string;
-  tier: 'hot' | 'warm' | 'cold';
-  content: string;
-  source: string;
-  score: number;
-  createdAt: string;
-  tags?: string[];
-}
-
-interface MemoryStats {
-  hot: number;
-  warm: number;
-  cold: number;
-  total: number;
-}
+interface MemoryEntry { id: string; tier: 'hot' | 'warm' | 'cold'; content: string; created_at: string; score?: number; }
 
 export function MemoryPage() {
-  const [memories, setMemories] = useState<Memory[]>([]);
-  const [stats, setStats] = useState<MemoryStats | null>(null);
+  const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tierFilter, setTierFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    Promise.allSettled([
-      api.rawRequest<{ memories: Memory[] }>('/api/memory'),
-      api.rawRequest<MemoryStats>('/api/memory/stats'),
-    ]).then(([mem, st]) => {
-      if (mem.status === 'fulfilled') setMemories(mem.value.memories ?? []);
-      if (st.status === 'fulfilled') setStats(st.value);
-      setLoading(false);
-    });
+    api.rawRequest<{ entries: MemoryEntry[] }>('/api/memory')
+      .then(data => setEntries(data.entries ?? []))
+      .catch(console.error)
+      .finally(() => setLoading(false));
   }, []);
 
-  const deleteMemory = async (id: string) => {
-    try {
-      await api.rawRequest(`/api/memory/${id}`, { method: 'DELETE' });
-      setMemories(prev => prev.filter(m => m.id !== id));
-    } catch (err) {
-      console.error('Delete failed:', err);
-    }
+  const filtered = entries.filter(e => e.content.toLowerCase().includes(search.toLowerCase()));
+  const hot = entries.filter(e => e.tier === 'hot').length;
+  const warm = entries.filter(e => e.tier === 'warm').length;
+  const cold = entries.filter(e => e.tier === 'cold').length;
+
+  const tierIcon = (t: string) => {
+    if (t === 'hot') return <Flame size={14} style={{ color: 'var(--rose)' }} />;
+    if (t === 'warm') return <Thermometer size={14} style={{ color: 'var(--amber)' }} />;
+    return <Snowflake size={14} style={{ color: 'var(--blue)' }} />;
   };
 
-  const filtered = memories
-    .filter(m => tierFilter === 'all' || m.tier === tierFilter)
-    .filter(m => !search || m.content.toLowerCase().includes(search.toLowerCase()));
-
-  const tierColors: Record<string, string> = { hot: '#ef4444', warm: '#f59e0b', cold: '#3b82f6' };
+  const tierBadgeClass = (t: string) => t === 'hot' ? 'badge-rose' : t === 'warm' ? 'badge-amber' : 'badge-blue';
 
   return (
     <div>
-      <h1 style={s.title}>Memory</h1>
-      <p style={s.subtitle}>3-tier memory system (hot → warm → cold)</p>
+      <header className="page-header">
+        <span className="page-label label">Data</span>
+        <h2 className="page-title">Memory</h2>
+        <p className="page-subtitle">Agent memory tiers and recall</p>
+      </header>
 
-      {/* Stats */}
-      {stats && (
-        <div style={s.statsRow}>
-          <div style={s.statCard}>
-            <span style={{ color: '#ef4444', fontSize: 20 }}>🔥</span>
-            <div style={s.statValue}>{stats.hot}</div>
-            <div style={s.statLabel}>Hot</div>
-          </div>
-          <div style={s.statCard}>
-            <span style={{ fontSize: 20 }}>🌤</span>
-            <div style={s.statValue}>{stats.warm}</div>
-            <div style={s.statLabel}>Warm</div>
-          </div>
-          <div style={s.statCard}>
-            <span style={{ fontSize: 20 }}>❄️</span>
-            <div style={s.statValue}>{stats.cold}</div>
-            <div style={s.statLabel}>Cold</div>
-          </div>
-          <div style={s.statCard}>
-            <span style={{ fontSize: 20 }}>🧠</span>
-            <div style={s.statValue}>{stats.total}</div>
-            <div style={s.statLabel}>Total</div>
-          </div>
+      <div className="data-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)', marginBottom: 'var(--space-lg)' }}>
+        <div className="card" style={{ textAlign: 'center' }}>
+          <Flame size={20} style={{ color: 'var(--rose)', marginBottom: 8 }} />
+          <div className="big-number">{hot}</div>
+          <div className="data-label">Hot</div>
         </div>
-      )}
-
-      {/* Filters */}
-      <div style={s.filters}>
-        <select style={s.select} value={tierFilter} onChange={e => setTierFilter(e.target.value)}>
-          <option value="all">All Tiers</option>
-          <option value="hot">Hot</option>
-          <option value="warm">Warm</option>
-          <option value="cold">Cold</option>
-        </select>
-        <input
-          style={s.search}
-          placeholder="Search memories…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
+        <div className="card" style={{ textAlign: 'center' }}>
+          <Thermometer size={20} style={{ color: 'var(--amber)', marginBottom: 8 }} />
+          <div className="big-number">{warm}</div>
+          <div className="data-label">Warm</div>
+        </div>
+        <div className="card" style={{ textAlign: 'center' }}>
+          <Snowflake size={20} style={{ color: 'var(--blue)', marginBottom: 8 }} />
+          <div className="big-number">{cold}</div>
+          <div className="data-label">Cold</div>
+        </div>
       </div>
 
-      {/* Memory list */}
-      {loading ? (
-        <div style={s.loading}>Loading memories…</div>
-      ) : filtered.length === 0 ? (
-        <div style={s.empty}>No memories found.</div>
-      ) : (
-        <div style={s.list}>
-          {filtered.map(mem => (
-            <div key={mem.id} style={s.memRow}>
-              <div style={{ ...s.tierBadge, background: `${tierColors[mem.tier]}22`, color: tierColors[mem.tier] }}>
-                {mem.tier.toUpperCase()}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={s.memContent}>{mem.content.slice(0, 200)}{mem.content.length > 200 ? '…' : ''}</div>
-                <div style={s.memMeta}>
-                  Score: {mem.score.toFixed(2)} · {mem.source} · {new Date(mem.createdAt).toLocaleDateString()}
-                  {mem.tags?.length ? ` · ${mem.tags.join(', ')}` : ''}
+      <div className="card">
+        <div className="card-header" style={{ marginBottom: 12 }}>
+          <div className="card-icon green"><Brain size={16} /></div>
+          <span className="card-title">Entries</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius)', padding: '4px 8px' }}>
+            <Search size={13} style={{ color: 'var(--ink-muted)' }} />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search memories…"
+              style={{ border: 'none', background: 'transparent', color: 'var(--ink)', fontSize: 13, outline: 'none', width: 160, fontFamily: 'var(--font-ui)' }} />
+          </div>
+        </div>
+
+        {loading ? <div className="skeleton" style={{ height: 120, borderRadius: 8 }} /> : filtered.length === 0 ? (
+          <div style={{ color: 'var(--ink-muted)', textAlign: 'center', padding: 40, fontSize: 14 }}>
+            <Database size={32} style={{ opacity: 0.2, marginBottom: 8 }} /><p>{search ? 'No matches' : 'No memory entries yet'}</p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {filtered.map(entry => (
+              <div key={entry.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                {tierIcon(entry.tier)}
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, color: 'var(--ink)', lineHeight: 1.5 }}>{entry.content}</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-muted)', marginTop: 4 }}>
+                    <span className={`badge ${tierBadgeClass(entry.tier)}`}>{entry.tier}</span>
+                    <span style={{ marginLeft: 8 }}>{new Date(entry.created_at).toLocaleDateString()}</span>
+                    {entry.score != null && <span style={{ marginLeft: 8 }}>Score: {entry.score.toFixed(2)}</span>}
+                  </div>
                 </div>
               </div>
-              <button style={s.deleteBtn} onClick={() => deleteMemory(mem.id)} title="Delete">✕</button>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
-
-const s: Record<string, React.CSSProperties> = {
-  title: { fontSize: 28, fontWeight: 700, margin: '0 0 8px', color: '#f4f4f5' },
-  subtitle: { fontSize: 14, color: '#71717a', margin: '0 0 24px' },
-  statsRow: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 },
-  statCard: { textAlign: 'center' as const, padding: 16, background: 'rgba(255,255,255,0.02)', borderRadius: 10, border: '1px solid #1e1e2e' },
-  statValue: { fontSize: 24, fontWeight: 700, color: '#f4f4f5', marginTop: 4 },
-  statLabel: { fontSize: 12, color: '#71717a', marginTop: 2 },
-  filters: { display: 'flex', gap: 12, marginBottom: 16 },
-  select: { padding: '8px 12px', borderRadius: 8, border: '1px solid #27272a', background: '#18181b', color: '#a1a1aa', fontSize: 13 },
-  search: { flex: 1, padding: '8px 14px', borderRadius: 8, border: '1px solid #27272a', background: '#18181b', color: '#e4e4e7', fontSize: 14, outline: 'none' },
-  loading: { color: '#71717a', padding: 32, textAlign: 'center' as const },
-  empty: { color: '#52525b', padding: 48, textAlign: 'center' as const, fontSize: 14 },
-  list: { borderRadius: 12, border: '1px solid #1e1e2e', overflow: 'hidden' },
-  memRow: { display: 'flex', alignItems: 'flex-start', gap: 14, padding: '14px 20px', borderBottom: '1px solid #1e1e2e' },
-  tierBadge: { fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, flexShrink: 0, marginTop: 2 },
-  memContent: { fontSize: 14, color: '#e4e4e7', lineHeight: 1.5 },
-  memMeta: { fontSize: 12, color: '#52525b', marginTop: 4 },
-  deleteBtn: {
-    width: 28, height: 28, borderRadius: 6, border: '1px solid #27272a',
-    background: 'transparent', color: '#71717a', cursor: 'pointer', fontSize: 14,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-};

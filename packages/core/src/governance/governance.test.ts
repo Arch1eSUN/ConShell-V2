@@ -37,15 +37,25 @@ function createMockPolicy(decision: 'allow' | 'deny' | 'escalate' = 'allow', rul
 
 function createMockSelfMod() {
   return {
-    modify: vi.fn().mockResolvedValue({
+    propose: vi.fn().mockResolvedValue({
       id: 'mod_001',
       file: 'test.ts',
       diff: '+ new line',
       reason: 'test mod',
       timestamp: new Date().toISOString(),
-      approved: true,
+      status: 'proposed',
+    }),
+    approve: vi.fn(),
+    apply: vi.fn().mockResolvedValue({
+      id: 'mod_001',
+      file: 'test.ts',
+      diff: '+ new line',
+      reason: 'test mod',
+      timestamp: new Date().toISOString(),
+      status: 'applied',
     }),
     rollback: vi.fn().mockResolvedValue(true),
+    verify: vi.fn(),
     history: () => [],
     stats: () => ({ total: 0, lastHour: 0, rolledBack: 0 }),
   };
@@ -70,6 +80,20 @@ function createMockMultiAgent() {
   };
 }
 
+function createMockLineage() {
+  return {
+    createChild: vi.fn().mockResolvedValue({
+      id: 'lineage_001',
+      childId: 'agent_001',
+      status: 'active',
+      spec: { name: 'test-child', task: 'test' },
+    }),
+    getByChildId: vi.fn().mockReturnValue(null),
+    recallChild: vi.fn().mockResolvedValue({ success: true }),
+    terminateChild: vi.fn().mockResolvedValue({ success: true }),
+  };
+}
+
 const mockLogger = {
   info: () => {},
   warn: () => {},
@@ -85,8 +109,6 @@ function createService(overrides: Partial<GovernanceServiceOptions> = {}): Gover
     selfmod: createMockSelfMod() as any,
     multiagent: createMockMultiAgent() as any,
     logger: mockLogger,
-    dailyBudgetCents: 100_00,
-    dailySpentCents: 0,
     ...overrides,
   });
 }
@@ -246,8 +268,8 @@ describe('SelfMod Governance (Round 16.3)', () => {
     svc.evaluate(p.id);
     await svc.apply(p.id);
 
-    expect(selfmod.modify).toHaveBeenCalledOnce();
-    expect(selfmod.modify).toHaveBeenCalledWith('file.ts', '// changed', 'governance-required mod');
+    expect(selfmod.propose).toHaveBeenCalledOnce();
+    expect(selfmod.propose).toHaveBeenCalledWith('file.ts', '// changed', 'governance-required mod');
   });
 
   it('apply() generates receipt with modRecordId', async () => {
@@ -282,7 +304,7 @@ describe('SelfMod Governance (Round 16.3)', () => {
 
   it('selfmod apply failure sets status to failed', async () => {
     const selfmod = createMockSelfMod();
-    selfmod.modify.mockRejectedValue(new Error('Protected file'));
+    selfmod.apply.mockRejectedValue(new Error('Protected file'));
     const svc = createService({ selfmod: selfmod as any });
 
     const p = svc.propose({
@@ -300,7 +322,7 @@ describe('SelfMod Governance (Round 16.3)', () => {
 
   it('verify fails when apply returned failure', async () => {
     const selfmod = createMockSelfMod();
-    selfmod.modify.mockRejectedValue(new Error('Protected'));
+    selfmod.apply.mockRejectedValue(new Error('Protected'));
     const svc = createService({ selfmod: selfmod as any });
 
     const p = svc.propose({
@@ -316,10 +338,10 @@ describe('SelfMod Governance (Round 16.3)', () => {
 
 // ── 4. Replication Governance Tests ──────────────────────────────────
 
-describe('Replication Governance (Round 16.3)', () => {
-  it('replication goes through proposal → apply → spawns child', async () => {
-    const multiagent = createMockMultiAgent();
-    const svc = createService({ multiagent: multiagent as any });
+describe('Replication Governance (Round 18.7 — canonical lineage path)', () => {
+  it('replication goes through proposal → apply → creates child via lineage', async () => {
+    const lineage = createMockLineage();
+    const svc = createService({ lineage: lineage as any });
 
     const p = svc.propose({
       actionKind: 'replication',
@@ -333,12 +355,12 @@ describe('Replication Governance (Round 16.3)', () => {
 
     expect(receipt.result).toBe('success');
     expect(receipt.relatedIds?.childId).toBe('agent_001');
-    expect(multiagent.spawn).toHaveBeenCalledOnce();
+    expect(receipt.relatedIds?.lineageRecordId).toBe('lineage_001');
+    expect(lineage.createChild).toHaveBeenCalledOnce();
   });
 
-  it('replication rollback terminates child', async () => {
-    const multiagent = createMockMultiAgent();
-    const svc = createService({ multiagent: multiagent as any });
+  it('replication without lineage configured fails with clear error', async () => {
+    const svc = createService({ lineage: undefined, multiagent: undefined });
 
     const p = svc.propose({
       actionKind: 'replication',
@@ -348,15 +370,14 @@ describe('Replication Governance (Round 16.3)', () => {
       payload: { name: 'temp-child', task: 'temp', genesisPrompt: '' },
     });
     svc.evaluate(p.id);
-    await svc.apply(p.id);
-    await svc.rollback(p.id);
+    const receipt = await svc.apply(p.id);
 
-    expect(multiagent.terminate).toHaveBeenCalledWith('agent_001', true);
-    expect(svc.getProposal(p.id)?.status).toBe('rolled_back');
+    expect(receipt.result).toBe('failure');
+    expect(receipt.reason).toMatch(/LineageService not configured/);
   });
 
   it('replication denied when budget exceeded', () => {
-    const svc = createService({ dailyBudgetCents: 1000, dailySpentCents: 900 });
+    const svc = createService({ economic: { survivalTier: () => 'thriving', isEmergency: () => false, mustPreserveActive: () => false, canAcceptAction: () => ({allowed: false, reason: 'Budget exceeded'}) } as any });
     const p = svc.propose({
       actionKind: 'replication',
       target: 'expensive-child',

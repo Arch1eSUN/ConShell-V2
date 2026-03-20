@@ -1,24 +1,15 @@
-/**
- * HealthPage — Agent健康状态
- */
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { HeartPulse, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
 import { api } from '../api';
 
-interface HealthCheck {
-  name: string;
-  status: 'pass' | 'warn' | 'fail';
-  message: string;
-}
+interface HealthCheck { name: string; status: 'pass' | 'warn' | 'fail'; message: string; }
 
 export function HealthPage() {
-  const [health, setHealth] = useState<any>(null);
   const [checks, setChecks] = useState<HealthCheck[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     api.health().then(h => {
-      setHealth(h);
-      // Derive checks from health response
       setChecks([
         { name: 'Server', status: h.status === 'ok' ? 'pass' : h.status === 'degraded' ? 'warn' : 'fail', message: h.status },
         { name: 'Agent', status: h.agent ? 'pass' : 'warn', message: h.agent ?? 'Unknown' },
@@ -32,46 +23,47 @@ export function HealthPage() {
     });
   }, []);
 
-  const statusIcons = { pass: '✓', warn: '⚠', fail: '✗' };
-  const statusColors = { pass: '#4ade80', warn: '#fbbf24', fail: '#ef4444' };
+  const StatusIcon = ({ status }: { status: string }) => {
+    if (status === 'pass') return <CheckCircle2 size={16} style={{ color: 'var(--green)' }} />;
+    if (status === 'warn') return <AlertTriangle size={16} style={{ color: 'var(--amber)' }} />;
+    return <XCircle size={16} style={{ color: 'var(--rose)' }} />;
+  };
 
   return (
     <div>
-      <h1 style={s.title}>Health</h1>
-      <p style={s.subtitle}>System health checks and diagnostics</p>
+      <header className="page-header">
+        <span className="page-label label">System</span>
+        <h2 className="page-title">Health</h2>
+        <p className="page-subtitle">System health checks and diagnostics</p>
+      </header>
 
       {loading ? (
-        <div style={s.loading}>Running health checks…</div>
+        <div className="skeleton" style={{ height: 200, borderRadius: 10 }} />
       ) : (
-        <div style={s.checkList}>
-          {checks.map(check => (
-            <div key={check.name} style={s.checkRow}>
-              <span style={{ ...s.icon, color: statusColors[check.status] }}>
-                {statusIcons[check.status]}
-              </span>
-              <span style={s.checkName}>{check.name}</span>
-              <span style={{ ...s.checkMsg, color: statusColors[check.status] }}>{check.message}</span>
-            </div>
-          ))}
+        <div className="card">
+          <div className="card-header">
+            <div className="card-icon green"><HeartPulse size={16} /></div>
+            <span className="card-title">Health Checks</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {checks.map(check => (
+              <div key={check.name} className="list-row">
+                <StatusIcon status={check.status} />
+                <span style={{ fontWeight: 500, fontSize: 14, flex: 1, color: 'var(--ink)' }}>{check.name}</span>
+                <code className="mono" style={{
+                  color: check.status === 'pass' ? 'var(--green-text)' : check.status === 'warn' ? 'var(--amber-text)' : 'var(--rose-text)',
+                }}>{check.message}</code>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      <div style={s.tip}>
-        💡 Run <code style={s.code}>conshell doctor</code> for a comprehensive health check.
+      <div className="card" style={{ marginTop: 'var(--space-lg)', background: 'var(--green-bg)' }}>
+        <p style={{ fontSize: 14, color: 'var(--ink-secondary)' }}>
+          💡 Run <code style={{ background: 'var(--surface)', padding: '2px 8px', borderRadius: 4, fontSize: 13, color: 'var(--ink)' }}>conshell doctor</code> for a comprehensive health check.
+        </p>
       </div>
     </div>
   );
 }
-
-const s: Record<string, React.CSSProperties> = {
-  title: { fontSize: 28, fontWeight: 700, margin: '0 0 8px', color: '#f4f4f5' },
-  subtitle: { fontSize: 14, color: '#71717a', margin: '0 0 32px' },
-  loading: { color: '#71717a', padding: 32 },
-  checkList: { background: 'rgba(255,255,255,0.02)', borderRadius: 12, border: '1px solid #1e1e2e', overflow: 'hidden' },
-  checkRow: { display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px', borderBottom: '1px solid #1e1e2e' },
-  icon: { fontSize: 18, fontWeight: 700, width: 24, textAlign: 'center' as const },
-  checkName: { fontWeight: 600, fontSize: 14, flex: 1, color: '#e4e4e7' },
-  checkMsg: { fontSize: 14, fontFamily: 'monospace' },
-  tip: { marginTop: 32, padding: 16, background: 'rgba(108,92,231,0.08)', borderRadius: 10, fontSize: 14, color: '#a1a1aa' },
-  code: { background: '#27272a', padding: '2px 8px', borderRadius: 4, fontSize: 13, color: '#e4e4e7' },
-};

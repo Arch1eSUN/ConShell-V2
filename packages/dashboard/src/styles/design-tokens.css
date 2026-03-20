@@ -1,0 +1,103 @@
+/* ── ConShell V2 Design Tokens — polished warm paper ──────────────── */
+:root {
+    /* ── Palette — Dark Tech & Cyberpunk ─────────────────────────────── */
+    --paper: #050505;
+    --paper-warm: #0A0A0A;
+    --ink: #FFFFFF;
+    --ink-secondary: #A1A1AA;
+    --ink-muted: #52525B;
+    --surface: #0E0E11;
+    --surface-hover: #141418;
+    --surface-alt: rgba(255, 255, 255, 0.02);
+    --border: rgba(255, 255, 255, 0.06);
+    --border-strong: rgba(255, 255, 255, 0.12);
+    --border-hover: rgba(16, 185, 129, 0.4);
+
+    /* ── Signal colors — Cyber Neon ──────────────────────────────────── */
+    --green: #10B981; /* Terminal green */
+    --green-text: #34D399;
+    --green-bg: rgba(16, 185, 129, 0.1);
+    --green-bg-strong: rgba(16, 185, 129, 0.2);
+
+    --blue: #06B6D4; /* Cyan */
+    --blue-text: #22D3EE;
+    --blue-bg: rgba(6, 182, 212, 0.1);
+
+    --amber: #F59E0B;
+    --amber-text: #FBBF24;
+    --amber-bg: rgba(245, 158, 11, 0.1);
+
+    --rose: #EF4444;
+    --rose-text: #F87171;
+    --rose-bg: rgba(239, 68, 68, 0.1);
+
+    --violet: #8B5CF6;
+    --violet-bg: rgba(139, 92, 246, 0.1);
+
+    /* ── Terminal — sidebar & dark panels ─────────────────────────── */
+    --sidebar-bg: #000000;
+    --sidebar-surface: #050505;
+    --sidebar-text: #A1A1AA;
+    --sidebar-text-hover: #F4F4F5;
+    --sidebar-text-active: #10B981; /* Active is neon green */
+    --sidebar-muted: #3F3F46;
+    --sidebar-border: rgba(255, 255, 255, 0.05);
+    --sidebar-active-bg: rgba(16, 185, 129, 0.1);
+    --sidebar-hover-bg: rgba(255, 255, 255, 0.04);
+
+    /* ── Typography ──────────────────────────────────────────────── */
+    --font-display: 'JetBrains Mono', 'Fira Code', monospace; /* Hacker aesthetic */
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
+
+    /* ── Radius — sharper edges for tech ─────────────────────────── */
+    --radius-xs: 2px;
+    --radius: 4px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+
+    /* ── Motion ──────────────────────────────────────────────────── */
+    --transition: 200ms ease;
+    --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
+    --spring: 400ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+
+    /* ── Spacing ─────────────────────────────────────────────────── */
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 16px;
+    --space-lg: 24px;
+    --space-xl: 32px;
+    --space-2xl: 48px;
+    --space-3xl: 64px;
+
+    /* ── Shadows — Cyber glows ───────────────────────────────────── */
+    --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    --shadow-card-hover: 0 4px 24px rgba(16, 185, 129, 0.15), inset 0 1px 0 rgba(16, 185, 129, 0.2);
+    --shadow-dropdown: 0 12px 32px rgba(0, 0, 0, 0.8);
+}
+
+/* ── Light Theme Override ────────────────────────────────────────── */
+[data-theme="light"] {
+    --paper: #FAFAFA;
+    --paper-warm: #F4F4F5;
+    --ink: #050505;
+    --ink-secondary: #52525B;
+    --ink-muted: #A1A1AA;
+    --surface: #FFFFFF;
+    --surface-hover: #F4F4F5;
+    --surface-alt: rgba(0, 0, 0, 0.02);
+    
+    --border: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.15);
+    --border-hover: rgba(16, 185, 129, 0.4);
+
+    --sidebar-bg: #E4E4E7;
+    --sidebar-surface: #F4F4F5;
+    --sidebar-text: #52525B;
+    --sidebar-text-hover: #050505;
+    --sidebar-muted: #A1A1AA;
+    --sidebar-border: rgba(0, 0, 0, 0.08);
+
+    --shadow-card: 0 2px 10px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    --shadow-card-hover: 0 4px 16px rgba(16, 185, 129, 0.1), inset 0 1px 0 rgba(16, 185, 129, 0.15);
+}

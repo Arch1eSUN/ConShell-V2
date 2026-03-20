@@ -186,6 +186,51 @@ export class CommitmentStore {
     );
   }
 
+  // ── Execution Eligibility (Round 18.9, enhanced Round 19.2) ─────────
+
+  /**
+   * Canonical predicate for stale snapshot suppression.
+   * Determines if a commitment from the scheduler is still eligible for execution.
+   *
+   * @param id - Commitment ID to check
+   * @param snapshotUpdatedAt - Optional: the commitment's updatedAt value at scheduler dispatch time.
+   *   If provided, the commitment must not have been modified since then (drift detection).
+   */
+  isExecutionEligible(id: string, snapshotUpdatedAt?: string): { eligible: boolean; reason?: string } {
+    const commitment = this.items.get(id);
+    if (!commitment) {
+      return { eligible: false, reason: 'Commitment not found in active store' };
+    }
+
+    if (TERMINAL_STATUSES.includes(commitment.status)) {
+      return { eligible: false, reason: `Commitment is in terminal state: ${commitment.status}` };
+    }
+
+    if (commitment.status === 'blocked') {
+      return { eligible: false, reason: `Commitment is blocked: ${commitment.blockedReason || 'unknown'}` };
+    }
+
+    // Round 19.2: Stale snapshot drift detection
+    if (snapshotUpdatedAt && commitment.updatedAt > snapshotUpdatedAt) {
+      return {
+        eligible: false,
+        reason: `Stale snapshot: commitment modified since dispatch (dispatch=${snapshotUpdatedAt}, current=${commitment.updatedAt})`,
+      };
+    }
+
+    return { eligible: true };
+  }
+
+  /**
+   * Check if a commitment has been modified since a given timestamp.
+   * Utility for scheduler and materializer to detect live-drift.
+   */
+  isStaleSnapshot(id: string, scheduledAt: string): boolean {
+    const commitment = this.items.get(id);
+    if (!commitment) return true; // Not found = treat as stale
+    return commitment.updatedAt > scheduledAt;
+  }
+
   // ── Boot recovery ───────────────────────────────────────────────────
 
   /**
@@ -205,6 +250,7 @@ export class CommitmentStore {
       // Reset active to planned on restart
       if (commitment.status === 'active') {
         commitment.status = 'planned';
+        commitment.recoveredFromCrash = true;
         commitment.updatedAt = new Date().toISOString();
       }
       this.items.set(commitment.id, commitment);

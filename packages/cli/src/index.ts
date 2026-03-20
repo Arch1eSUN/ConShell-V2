@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * ConShell CLI — 🐢 主权AI Agent运行时
+ * ConShell CLI — 🐢 Sovereign AI Agent Runtime
+ *
+ * Product-level CLI with 6 canonical control plane semantics.
+ * Commands: start | status | tui | doctor | onboard | daemon | configure
  */
 import { Command } from 'commander';
 import { VERSION } from '@conshell/core/public';
@@ -13,10 +16,10 @@ const program = new Command()
 // ── onboard ────────────────────────────────────────────────────────────
 program
   .command('onboard')
-  .description('首次配置向导')
-  .option('--install-daemon', '安装后台守护进程')
-  .option('--defaults', '使用默认配置（非交互模式）')
-  .option('--conshell-dir <path>', 'ConShell数据目录')
+  .description('Interactive first-run configuration wizard')
+  .option('--install-daemon', 'Install background daemon after setup')
+  .option('--defaults', 'Use defaults (non-interactive mode)')
+  .option('--conshell-dir <path>', 'ConShell data directory')
   .action(async (opts) => {
     const { runOnboard } = await import('./onboard.js');
     await runOnboard({
@@ -29,8 +32,8 @@ program
 // ── start ──────────────────────────────────────────────────────────────
 program
   .command('start')
-  .description('启动服务器 + WebUI')
-  .option('-p, --port <port>', '端口号', '4200')
+  .description('Boot the runtime — starts API server + Dashboard')
+  .option('-p, --port <port>', 'Port number', '4200')
   .action(async (opts) => {
     const chalk = (await import('chalk')).default;
     const { Kernel } = await import('@conshell/core/public');
@@ -52,9 +55,8 @@ program
     console.log(chalk.green(`✓ ConShell operational (${result.totalMs}ms)`));
     console.log(chalk.gray(`  Dashboard: http://localhost:${port}`));
     console.log(chalk.gray(`  API:       http://localhost:${port}/api`));
-    console.log(chalk.gray(`  CLIProxy:  http://localhost:${port}/v1`));
+    console.log(chalk.gray(`  TUI:       conshell tui -p ${port}`));
 
-    // Keep alive
     process.on('SIGINT', async () => {
       console.log(chalk.gray('\n🐢 Shutting down…'));
       await kernel.shutdown();
@@ -66,10 +68,89 @@ program
     });
   });
 
+// ── status ────────────────────────────────────────────────────────────
+program
+  .command('status')
+  .description('Presence snapshot — quick runtime health check')
+  .option('-p, --port <port>', 'Port number', '4200')
+  .action(async (opts) => {
+    const chalk = (await import('chalk')).default;
+    const port = parseInt(opts.port, 10);
+    const url = `http://localhost:${port}/api/system/summary`;
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        console.error(chalk.red(`✗ API returned ${res.status}`));
+        process.exit(1);
+      }
+
+      const data = await res.json() as any;
+
+      console.log('');
+      console.log(chalk.hex('#6C5CE7')('🐢 ConShell — Presence Snapshot'));
+      console.log(chalk.gray('━'.repeat(50)));
+
+      // Agent presence
+      if (data.agent) {
+        const stateColor = data.agent.alive ? chalk.green : chalk.red;
+        const beacon = data.agent.alive ? chalk.green('●') : chalk.red('✗');
+        console.log(`  ${beacon} ${chalk.bold('State')}      ${stateColor(data.agent.state)}`);
+      }
+
+      // Health verdict
+      if (data.posture && !data.posture.error) {
+        const verdict = data.posture.healthVerdict ?? 'unknown';
+        const vc = verdict === 'healthy' ? chalk.green
+          : verdict === 'degraded' ? chalk.yellow
+          : chalk.red;
+        console.log(`  ${chalk.bold('  Health')}     ${vc(verdict)} (${data.posture.overallHealthScore ?? '?'}/100)`);
+      }
+
+      // Survival (Economic)
+      if (data.economic && !data.economic.error) {
+        const tier = data.economic.survivalTier ?? 'unknown';
+        const tc = tier === 'thriving' || tier === 'normal' ? chalk.green
+          : tier === 'survival' ? chalk.yellow : chalk.red;
+        console.log(`  ${chalk.bold('  Survival')}   ${tc(tier.toUpperCase())} · runway ${data.economic.runwayDays ?? '?'}d`);
+      }
+
+      // Collective
+      if (data.collective && !data.collective.error) {
+        console.log(`  ${chalk.bold('  Collective')} ${data.collective.totalPeers ?? 0} peers · delegation ${Math.round((data.collective.delegationSuccessRate ?? 0) * 100)}%`);
+      }
+
+      // Governance
+      if (data.governance && !data.governance.error) {
+        const pend = data.governance.pendingProposals ?? 0;
+        console.log(`  ${chalk.bold('  Governance')} ${pend === 0 ? chalk.green('clean') : chalk.yellow(`${pend} pending`)}`);
+      }
+
+      // Version + timestamp
+      console.log(chalk.gray('━'.repeat(50)));
+      console.log(chalk.gray(`  v${data.version ?? '?'} · ${data.timestamp ?? ''}`));
+      console.log('');
+    } catch {
+      console.error(chalk.red(`✗ Cannot connect to ConShell at localhost:${port}`));
+      console.error(chalk.gray('  Is ConShell running? Try: conshell start'));
+      process.exit(1);
+    }
+  });
+
+// ── tui ───────────────────────────────────────────────────────────────
+program
+  .command('tui')
+  .description('Terminal dashboard — live 6-plane control view (press q to exit)')
+  .option('-p, --port <port>', 'Port number', '4200')
+  .action(async (opts) => {
+    const { startTui } = await import('./tui.js');
+    await startTui({ port: parseInt(opts.port, 10) });
+  });
+
 // ── doctor ─────────────────────────────────────────────────────────────
 program
   .command('doctor')
-  .description('健康检查')
+  .description('System truth diagnostic — checks all 6 control planes')
   .action(async () => {
     const { runDoctor } = await import('./doctor.js');
     await runDoctor();
@@ -78,12 +159,12 @@ program
 // ── daemon ─────────────────────────────────────────────────────────────
 const daemonCmd = program
   .command('daemon')
-  .description('后台守护进程管理');
+  .description('Background daemon management (install/uninstall/status)');
 
 daemonCmd
   .command('install')
-  .description('安装守护进程 (macOS launchd / Linux systemd)')
-  .option('-p, --port <port>', '端口号', '4200')
+  .description('Install daemon (macOS launchd / Linux systemd)')
+  .option('-p, --port <port>', 'Port number', '4200')
   .action(async (opts) => {
     const { installDaemon } = await import('./daemon.js');
     await installDaemon(parseInt(opts.port, 10));
@@ -91,7 +172,7 @@ daemonCmd
 
 daemonCmd
   .command('uninstall')
-  .description('卸载守护进程')
+  .description('Uninstall daemon')
   .action(async () => {
     const { uninstallDaemon } = await import('./daemon.js');
     await uninstallDaemon();
@@ -99,7 +180,7 @@ daemonCmd
 
 daemonCmd
   .command('status')
-  .description('查看守护进程状态')
+  .description('Check daemon status')
   .action(async () => {
     const { daemonStatus } = await import('./daemon.js');
     await daemonStatus();
@@ -107,8 +188,8 @@ daemonCmd
 
 daemonCmd
   .command('start-bg')
-  .description('后台启动 (不使用系统服务)')
-  .option('-p, --port <port>', '端口号', '4200')
+  .description('Start in background (without system service)')
+  .option('-p, --port <port>', 'Port number', '4200')
   .action(async (opts) => {
     const { startBackground } = await import('./daemon.js');
     await startBackground(parseInt(opts.port, 10));
@@ -117,7 +198,7 @@ daemonCmd
 // ── configure ──────────────────────────────────────────────────────────
 program
   .command('configure')
-  .description('编辑设置')
+  .description('Open configuration file in default editor')
   .action(async () => {
     const chalk = (await import('chalk')).default;
     const open = (await import('open')).default;
@@ -131,7 +212,7 @@ program
     await open(configPath);
   });
 
-// ── 默认命令：REPL ────────────────────────────────────────────────────
+// ── Default: REPL ────────────────────────────────────────────────────
 program
   .action(async () => {
     const chalk = (await import('chalk')).default;

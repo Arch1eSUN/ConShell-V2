@@ -9,7 +9,6 @@
 export type {
   GovernanceActionKind,
   GovernanceRiskLevel,
-  GovernanceDecision,
   GovernanceDenialLayer,
   GovernanceStatus,
   GovernanceProposal,

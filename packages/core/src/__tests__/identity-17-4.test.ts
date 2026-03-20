@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createGenesisRecord, rotateIdentity, revokeIdentity, recoverIdentity,
-  resolveActive, serializeRecords, restoreRecords,
+  resolveActive, serializeRecords, restoreRecordsHardened,
 } from '../identity/identity-lifecycle.js';
 import {
   ClaimIssuer, ClaimRegistry, computeClaimIntegrity,
@@ -35,17 +35,17 @@ describe('V1: IdentityRecord serialize/restore', () => {
     expect(snapshot.version).toBe(1);
     expect(snapshot.records).toHaveLength(1);
 
-    const restored = restoreRecords(snapshot);
-    expect(restored).not.toBeNull();
-    expect(restored![0]!.id).toBe(genesis.id);
-    expect(restored![0]!.name).toBe('test-agent');
-    expect(restored![0]!.status).toBe('active');
+    const restored = restoreRecordsHardened(snapshot);
+    expect(restored.valid).toBe(true);
+    expect(restored.records![0]!.id).toBe(genesis.id);
+    expect(restored.records![0]!.name).toBe('test-agent');
+    expect(restored.records![0]!.status).toBe('active');
   });
 
-  it('returns null for invalid snapshot', () => {
-    expect(restoreRecords({ version: 99, records: [] })).toBeNull();
-    expect(restoreRecords(null)).toBeNull();
-    expect(restoreRecords('garbage')).toBeNull();
+  it('returns valid: false for invalid snapshot', () => {
+    expect(restoreRecordsHardened({ version: 99, records: [] }).valid).toBe(false);
+    expect(restoreRecordsHardened(null as any).valid).toBe(false);
+    expect(restoreRecordsHardened('garbage' as any).valid).toBe(false);
   });
 });
 

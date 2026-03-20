@@ -11,6 +11,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useBalance, useChainId, useDisconnect } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { Wallet, Bot, Link2, CheckCircle2, XCircle, Clock, Activity, CreditCard, ExternalLink, ShieldCheck } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -40,6 +42,7 @@ interface WCSession {
 // ── WalletPage ────────────────────────────────────────────────────────
 
 export function WalletPage() {
+  const { t } = useTranslation();
   const { address, isConnected, connector } = useAccount();
   const chainId = useChainId();
   const { disconnect } = useDisconnect();
@@ -90,240 +93,218 @@ export function WalletPage() {
   }, [isConnected, address, syncWalletToAgent]);
 
   return (
-    <div className="wallet-page">
-      <h2>💰 钱包管理</h2>
+    <div>
+      <header className="page-header">
+        <span className="page-label label">{t('nav.wallet')}</span>
+        <h2 className="page-title">{t('wallet.title')}</h2>
+        <p className="page-subtitle">{t('wallet.subtitle')}</p>
+      </header>
 
-      {/* ── 外部钱包连接 ─────────────────────────────── */}
-      <section className="wallet-section">
-        <h3>🦊 外部钱包</h3>
-        <div className="connect-button-wrapper">
-          <ConnectButton
-            showBalance={true}
-            chainStatus="icon"
-            accountStatus="full"
-          />
+      <div style={{ display: 'grid', gap: 'var(--space-lg)', maxWidth: 800 }}>
+        
+        {/* ── 外部钱包 ─────────────────────────────── */}
+        <div className="card">
+          <div className="card-header">
+            <div className="card-icon amber"><Wallet size={16} /></div>
+            <span className="card-title">{t('wallet.external')}</span>
+          </div>
+          
+          <div style={{ padding: '0 0 16px', borderBottom: '1px dashed var(--border)', marginBottom: 16 }}>
+            <ConnectButton.Custom>
+              {({ account, chain, openAccountModal, openChainModal, openConnectModal, mounted }) => {
+                const ready = mounted;
+                const connected = ready && account && chain;
+                return (
+                  <div {...(!ready && { 'aria-hidden': true, style: { opacity: 0, pointerEvents: 'none', userSelect: 'none' } })}>
+                    {(() => {
+                      if (!connected) {
+                        return (
+                          <button onClick={openConnectModal} type="button" className="btn btn-primary" style={{ width: '100%' }}>
+                            <Wallet size={16} /> {t('wallet.external')} {/* Or "Connect Wallet" */}
+                          </button>
+                        );
+                      }
+                      if (chain.unsupported) {
+                        return (
+                          <button onClick={openChainModal} type="button" className="btn" style={{ width: '100%', color: 'var(--rose)', borderColor: 'var(--rose)' }}>
+                            <XCircle size={16} /> Wrong network
+                          </button>
+                        );
+                      }
+                      return (
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <button onClick={openChainModal} style={{ display: 'flex', alignItems: 'center', gap: 6 }} type="button" className="btn">
+                            {chain.hasIcon && (
+                              <div style={{ background: chain.iconBackground, width: 16, height: 16, borderRadius: 999, overflow: 'hidden' }}>
+                                {chain.iconUrl && <img alt={chain.name ?? 'Chain icon'} src={chain.iconUrl} style={{ width: 16, height: 16 }} />}
+                              </div>
+                            )}
+                            {chain.name}
+                          </button>
+                          <button onClick={openAccountModal} type="button" className="btn" style={{ flex: 1, justifyContent: 'center' }}>
+                            {account.displayBalance ? ` ${account.displayBalance} · ` : ''} {account.displayName}
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                );
+              }}
+            </ConnectButton.Custom>
+          </div>
+
+          {isConnected && (
+            <div className="data-grid" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
+              <div className="data-item">
+                <span className="data-label" style={{ marginBottom: 4 }}>{t('wallet.address')}</span>
+                <span className="data-value" style={{ fontFamily: 'var(--font-mono)', fontSize: 13, wordBreak: 'break-all' }}>{address}</span>
+              </div>
+              <div className="data-item">
+                <span className="data-label" style={{ marginBottom: 4 }}>{t('wallet.network')}</span>
+                <span className="data-value">{chainId === 8453 ? 'Base' : chainId === 1 ? 'Ethereum' : `Chain ${chainId}`}</span>
+              </div>
+              {ethBalance && (
+                <div className="data-item">
+                  <span className="data-label" style={{ marginBottom: 4 }}>{t('wallet.ethBalance')}</span>
+                  <span className="data-value">{Number(ethBalance.formatted).toFixed(6)} {ethBalance.symbol}</span>
+                </div>
+              )}
+              <div className="data-item">
+                <span className="data-label" style={{ marginBottom: 4 }}>{t('wallet.syncStatus')}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                  {syncing ? (
+                    <span className="badge badge-amber"><Clock size={12} className="spinning" style={{ marginRight: 4 }}/> {t('wallet.syncing')}</span>
+                  ) : syncStatus === 'synced' ? (
+                    <span className="badge badge-green"><CheckCircle2 size={12} style={{ marginRight: 4 }}/> {t('wallet.synced')}</span>
+                  ) : syncStatus === 'error' ? (
+                    <span className="badge badge-rose"><XCircle size={12} style={{ marginRight: 4 }}/> {t('wallet.syncFailed')}</span>
+                  ) : (
+                    <span className="badge"><Clock size={12} style={{ marginRight: 4 }}/> {t('wallet.pendingSync')}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
-        {isConnected && (
-          <div className="wallet-details">
-            <div className="wallet-info-row">
-              <span className="label">地址</span>
-              <code className="address">{address}</code>
-            </div>
-            <div className="wallet-info-row">
-              <span className="label">链</span>
-              <span>{chainId === 8453 ? 'Base' : chainId === 1 ? 'Ethereum' : `Chain ${chainId}`}</span>
-            </div>
-            {ethBalance && (
-              <div className="wallet-info-row">
-                <span className="label">ETH余额</span>
-                <span>{Number(ethBalance.formatted).toFixed(6)} {ethBalance.symbol}</span>
-              </div>
-            )}
-            <div className="wallet-info-row">
-              <span className="label">同步状态</span>
-              <span className={`sync-status sync-${syncStatus}`}>
-                {syncing ? '⏳ 同步中...' : syncStatus === 'synced' ? '✅ 已同步' : syncStatus === 'error' ? '❌ 失败' : '⏸️ 待同步'}
-              </span>
-            </div>
+        {/* ── Agent钱包 ──────────────────────────────── */}
+        <div className="card">
+          <div className="card-header">
+            <div className="card-icon blue"><Bot size={16} /></div>
+            <span className="card-title">{t('wallet.agent')}</span>
           </div>
-        )}
-      </section>
 
-      {/* ── Agent本地钱包 ──────────────────────────────── */}
-      <section className="wallet-section">
-        <h3>🤖 Agent钱包</h3>
-        {agentWallet ? (
-          <div className="wallet-details">
-            <div className="wallet-info-row">
-              <span className="label">地址</span>
-              <code className="address">{agentWallet.address}</code>
-            </div>
+          {agentWallet ? (
+            <div className="data-grid" style={{ gridTemplateColumns: '1fr' }}>
+              <div className="data-item">
+                <span className="data-label" style={{ marginBottom: 4 }}>{t('wallet.address')}</span>
+                <span className="data-value" style={{ fontFamily: 'var(--font-mono)', fontSize: 13, wordBreak: 'break-all' }}>{agentWallet.address}</span>
+              </div>
 
-            {agentWallet.balances && (
-              <>
-                {agentWallet.balances.chains.map(chain => (
-                  <div key={chain.chainName} className="chain-balance">
-                    <h4>{chain.chainName}</h4>
-                    <div className="wallet-info-row">
-                      <span className="label">ETH</span>
-                      <span>{chain.ethFormatted}</span>
-                    </div>
-                    <div className="wallet-info-row">
-                      <span className="label">USDC</span>
-                      <span>${chain.usdcFormatted}</span>
-                    </div>
+              {agentWallet.balances && (
+                <>
+                  <div style={{ marginTop: 8 }}>
+                    {agentWallet.balances.chains.map(chain => (
+                      <div key={chain.chainName} style={{ 
+                        background: 'var(--surface-alt)', 
+                        padding: '12px 16px', 
+                        borderRadius: 8, 
+                        marginBottom: 8,
+                        border: '1px solid var(--border)'
+                      }}>
+                        <div style={{ fontWeight: 500, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <ShieldCheck size={14} style={{ color: 'var(--blue)' }}/>
+                          {chain.chainName}
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                          <div>
+                            <span className="data-label" style={{ fontSize: 11, marginBottom: 4 }}>ETH</span>
+                            <div className="data-value">{chain.ethFormatted}</div>
+                          </div>
+                          <div>
+                            <span className="data-label" style={{ fontSize: 11, marginBottom: 4 }}>USDC</span>
+                            <div className="data-value">${chain.usdcFormatted}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-                <div className="wallet-info-row total">
-                  <span className="label">总USDC (cents)</span>
-                  <span className="total-value">{agentWallet.balances.totalUsdcCents}</span>
-                </div>
-              </>
-            )}
+                  
+                  <div className="data-item" style={{ 
+                    marginTop: 8, 
+                    paddingTop: 16, 
+                    borderTop: '2px dashed var(--border)' 
+                  }}>
+                    <span className="data-label" style={{ marginBottom: 4 }}>{t('wallet.totalUsdc')}</span>
+                    <span className="big-number" style={{ color: 'var(--blue)', fontSize: 24 }}>
+                      {agentWallet.balances.totalUsdcCents}
+                    </span>
+                  </div>
+                </>
+              )}
 
-            {isConnected && agentWallet.address && (
-              <button
-                className="fund-button"
-                onClick={() => {
-                  // 跳转到对应链的USDC转账
-                  window.open(`https://basescan.org/address/${agentWallet.address}`, '_blank');
-                }}
-              >
-                💸 充值Agent (Base)
-              </button>
-            )}
+              {isConnected && agentWallet.address && (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => window.open(`https://basescan.org/address/${agentWallet.address}`, '_blank')}
+                  style={{ marginTop: 16, width: '100%' }}
+                >
+                  <CreditCard size={16} /> {t('wallet.depositAgent')} (Base) <ExternalLink size={14} />
+                </button>
+              )}
+            </div>
+          ) : (
+            <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink-muted)' }}>
+              <Bot size={24} className="spinning" style={{ margin: '0 auto 8px', opacity: 0.5 }} />
+              <div>{t('wallet.agentLoading')}</div>
+            </div>
+          )}
+        </div>
+
+        {/* ── WalletConnect Sessions ─────────────────────── */}
+        <div className="card">
+          <div className="card-header">
+            <div className="card-icon green"><Link2 size={16} /></div>
+            <span className="card-title">{t('wallet.wcSessions')}</span>
           </div>
-        ) : (
-          <p className="info-text">Agent钱包加载中...</p>
-        )}
-      </section>
 
-      {/* ── WalletConnect Sessions ─────────────────────── */}
-      <section className="wallet-section">
-        <h3>🔗 WalletConnect Sessions</h3>
-        {wcSessions.length > 0 ? (
-          <div className="sessions-list">
-            {wcSessions.map(session => (
-              <div key={session.id} className={`session-card ${session.active ? 'active' : 'inactive'}`}>
-                <div className="wallet-info-row">
-                  <span className="label">钱包</span>
-                  <span>{session.peerWalletType}</span>
+          {wcSessions.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {wcSessions.map(session => (
+                <div key={session.id} style={{ 
+                  padding: 16, 
+                  border: '1px solid var(--border)', 
+                  borderRadius: 8,
+                  borderLeft: `3px solid ${session.active ? 'var(--green)' : 'var(--border-strong)'}`,
+                  background: 'var(--surface-alt)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div style={{ fontWeight: 500, color: 'var(--ink)' }}>{session.peerWalletType}</div>
+                    <span className={`badge ${session.active ? 'badge-green' : 'badge-slate'}`} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {session.active ? (
+                        <><Activity size={12} /> {t('wallet.active')}</>
+                      ) : (
+                        <><XCircle size={12} /> {t('wallet.disconnected')}</>
+                      )}
+                    </span>
+                  </div>
+                  <div className="data-item">
+                    <span className="data-label" style={{ marginBottom: 4 }}>{t('wallet.address')}</span>
+                    <span className="data-value" style={{ fontFamily: 'var(--font-mono)', fontSize: 13, wordBreak: 'break-all' }}>
+                      {session.peerAddress}
+                    </span>
+                  </div>
                 </div>
-                <div className="wallet-info-row">
-                  <span className="label">地址</span>
-                  <code className="address">{session.peerAddress}</code>
-                </div>
-                <div className="wallet-info-row">
-                  <span className="label">状态</span>
-                  <span className={session.active ? 'status-active' : 'status-inactive'}>
-                    {session.active ? '🟢 活跃' : '🔴 已断开'}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="info-text">暂无活跃 WalletConnect 连接</p>
-        )}
-      </section>
-
-      <style>{`
-        .wallet-page {
-          padding: 1.5rem;
-          max-width: 800px;
-        }
-        .wallet-page h2 {
-          font-size: 1.5rem;
-          margin-bottom: 1.5rem;
-          color: var(--text-primary, #e0e0e0);
-        }
-        .wallet-section {
-          background: var(--surface, rgba(30, 32, 44, 0.8));
-          border: 1px solid var(--border, rgba(255,255,255,0.1));
-          border-radius: 12px;
-          padding: 1.25rem;
-          margin-bottom: 1.25rem;
-          backdrop-filter: blur(12px);
-        }
-        .wallet-section h3 {
-          font-size: 1.1rem;
-          margin-bottom: 1rem;
-          color: var(--text-secondary, #b0b0b0);
-        }
-        .connect-button-wrapper {
-          margin-bottom: 1rem;
-        }
-        .wallet-details {
-          display: flex;
-          flex-direction: column;
-          gap: 0.5rem;
-        }
-        .wallet-info-row {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 0.4rem 0;
-          border-bottom: 1px solid var(--border, rgba(255,255,255,0.05));
-        }
-        .wallet-info-row .label {
-          color: var(--text-secondary, #888);
-          font-size: 0.85rem;
-        }
-        .address {
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 0.8rem;
-          color: var(--accent, #58a6ff);
-          max-width: 300px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .chain-balance {
-          background: rgba(0,0,0,0.15);
-          border-radius: 8px;
-          padding: 0.75rem;
-          margin-top: 0.5rem;
-        }
-        .chain-balance h4 {
-          font-size: 0.9rem;
-          margin-bottom: 0.5rem;
-          color: var(--text-primary, #ccc);
-        }
-        .total {
-          margin-top: 0.75rem;
-          padding-top: 0.75rem;
-          border-top: 2px solid var(--accent, #58a6ff);
-        }
-        .total-value {
-          font-weight: 700;
-          font-size: 1.1rem;
-          color: var(--accent, #58a6ff);
-        }
-        .fund-button {
-          margin-top: 1rem;
-          padding: 0.6rem 1.2rem;
-          background: linear-gradient(135deg, #0066ff, #0033cc);
-          color: white;
-          border: none;
-          border-radius: 8px;
-          cursor: pointer;
-          font-weight: 600;
-          transition: transform 0.15s, box-shadow 0.15s;
-        }
-        .fund-button:hover {
-          transform: translateY(-1px);
-          box-shadow: 0 4px 16px rgba(0,102,255,0.3);
-        }
-        .sync-status {
-          font-size: 0.85rem;
-        }
-        .sync-synced { color: #22c55e; }
-        .sync-error { color: #ef4444; }
-        .session-card {
-          background: rgba(0,0,0,0.1);
-          border-radius: 8px;
-          padding: 0.75rem;
-          margin-bottom: 0.5rem;
-        }
-        .session-card.active {
-          border-left: 3px solid #22c55e;
-        }
-        .session-card.inactive {
-          border-left: 3px solid #666;
-          opacity: 0.6;
-        }
-        .status-active { color: #22c55e; }
-        .status-inactive { color: #666; }
-        .sessions-list {
-          display: flex;
-          flex-direction: column;
-          gap: 0.5rem;
-        }
-        .info-text {
-          color: var(--text-secondary, #888);
-          font-style: italic;
-        }
-      `}</style>
+              ))}
+            </div>
+          ) : (
+            <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink-muted)' }}>
+              <Link2 size={24} style={{ margin: '0 auto 8px', opacity: 0.5 }} />
+              <div>{t('wallet.noWcSessions')}</div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

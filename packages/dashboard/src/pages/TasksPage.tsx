@@ -1,19 +1,13 @@
-/**
- * TasksPage — 异步任务管理
- */
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { ListTodo, Clock, Loader2, CheckCircle2, XCircle, Ban, RefreshCw } from 'lucide-react';
 import { api } from '../api';
 
 interface Task {
-  id: string;
-  type: string;
+  id: string; type: string;
   status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
-  description: string;
-  progress?: number;
-  result?: string;
-  error?: string;
-  createdAt: string;
-  completedAt?: string;
+  description: string; progress?: number;
+  result?: string; error?: string;
+  createdAt: string; completedAt?: string;
 }
 
 export function TasksPage() {
@@ -31,65 +25,74 @@ export function TasksPage() {
   useEffect(() => { loadTasks(); const timer = setInterval(loadTasks, 5000); return () => clearInterval(timer); }, []);
 
   const cancelTask = async (id: string) => {
-    try {
-      await api.rawRequest(`/api/tasks/${id}/cancel`, { method: 'POST' });
-      loadTasks();
-    } catch (err) {
-      console.error('Cancel failed:', err);
-    }
+    try { await api.rawRequest(`/api/tasks/${id}/cancel`, { method: 'POST' }); loadTasks(); } catch {}
   };
 
   const filtered = statusFilter === 'all' ? tasks : tasks.filter(t => t.status === statusFilter);
 
-  const statusColors: Record<string, string> = {
-    pending: '#fbbf24', running: '#3b82f6', done: '#4ade80', failed: '#ef4444', cancelled: '#71717a',
+  const StatusIcon = ({ status }: { status: string }) => {
+    switch (status) {
+      case 'pending': return <Clock size={14} style={{ color: 'var(--amber)' }} />;
+      case 'running': return <Loader2 size={14} style={{ color: 'var(--blue)' }} className="spinning" />;
+      case 'done': return <CheckCircle2 size={14} style={{ color: 'var(--green)' }} />;
+      case 'failed': return <XCircle size={14} style={{ color: 'var(--rose)' }} />;
+      case 'cancelled': return <Ban size={14} style={{ color: 'var(--ink-muted)' }} />;
+      default: return null;
+    }
   };
-  const statusIcons: Record<string, string> = {
-    pending: '⏳', running: '🔄', done: '✓', failed: '✗', cancelled: '⊘',
+
+  const selectStyle: React.CSSProperties = {
+    padding: '6px 12px', borderRadius: 'var(--radius)', border: '1px solid var(--border-strong)',
+    background: 'var(--surface)', color: 'var(--ink-secondary)', fontSize: 13, fontFamily: 'var(--font-ui)',
   };
 
   return (
     <div>
-      <div style={s.header}>
-        <h1 style={s.title}>Tasks</h1>
-        <div style={s.controls}>
-          <select style={s.select} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-            <option value="all">All</option>
-            <option value="pending">Pending</option>
-            <option value="running">Running</option>
-            <option value="done">Done</option>
-            <option value="failed">Failed</option>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-sm)' }}>
+        <header className="page-header" style={{ marginBottom: 0 }}>
+          <span className="page-label label">Queue</span>
+          <h2 className="page-title">Tasks</h2>
+        </header>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select style={selectStyle} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option value="all">All</option><option value="pending">Pending</option><option value="running">Running</option>
+            <option value="done">Done</option><option value="failed">Failed</option>
           </select>
-          <button style={s.refreshBtn} onClick={loadTasks}>🔄</button>
+          <button onClick={loadTasks} style={{ ...selectStyle, cursor: 'pointer', display: 'flex', alignItems: 'center' }}><RefreshCw size={14} /></button>
         </div>
       </div>
-      <p style={s.subtitle}>{tasks.length} total · {tasks.filter(t => t.status === 'running').length} running</p>
+      <p className="page-subtitle" style={{ marginBottom: 'var(--space-lg)' }}>{tasks.length} total · {tasks.filter(t => t.status === 'running').length} running</p>
 
-      {loading ? (
-        <div style={s.loading}>Loading tasks…</div>
-      ) : filtered.length === 0 ? (
-        <div style={s.empty}>No tasks{statusFilter !== 'all' ? ` with status "${statusFilter}"` : ''}.</div>
+      {loading ? <div className="skeleton" style={{ height: 200, borderRadius: 10 }} /> : filtered.length === 0 ? (
+        <div style={{ color: 'var(--ink-muted)', textAlign: 'center', padding: 48, fontSize: 14 }}>
+          <ListTodo size={32} style={{ opacity: 0.2, marginBottom: 8 }} />
+          <p>No tasks{statusFilter !== 'all' ? ` with status "${statusFilter}"` : ''}.</p>
+        </div>
       ) : (
-        <div style={s.list}>
+        <div className="card" style={{ padding: 0 }}>
           {filtered.map(task => (
-            <div key={task.id} style={s.taskRow}>
-              <span style={{ color: statusColors[task.status], fontSize: 16, width: 24 }}>
-                {statusIcons[task.status]}
-              </span>
+            <div key={task.id} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 14,
+              padding: '14px 20px', borderBottom: '1px solid var(--border)',
+            }}>
+              <StatusIcon status={task.status} />
               <div style={{ flex: 1 }}>
-                <div style={s.taskDesc}>{task.description || task.type}</div>
-                <div style={s.taskMeta}>
+                <div style={{ fontWeight: 500, fontSize: 14, color: 'var(--ink)' }}>{task.description || task.type}</div>
+                <div className="data-label" style={{ marginTop: 4 }}>
                   {task.id.slice(0, 8)} · {task.type} · {new Date(task.createdAt).toLocaleString()}
                 </div>
                 {task.progress != null && task.status === 'running' && (
-                  <div style={s.progressBg}>
-                    <div style={{ ...s.progressFill, width: `${task.progress}%` }} />
+                  <div style={{ height: 4, background: 'var(--surface)', borderRadius: 2, marginTop: 8, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', background: 'var(--blue)', borderRadius: 2, transition: 'width 0.3s', width: `${task.progress}%` }} />
                   </div>
                 )}
-                {task.error && <div style={s.error}>{task.error}</div>}
+                {task.error && <div style={{ fontSize: 12, color: 'var(--rose)', marginTop: 4 }}>{task.error}</div>}
               </div>
               {(task.status === 'pending' || task.status === 'running') && (
-                <button style={s.cancelBtn} onClick={() => cancelTask(task.id)}>Cancel</button>
+                <button onClick={() => cancelTask(task.id)} style={{
+                  padding: '4px 12px', borderRadius: 'var(--radius)', border: '1px solid var(--rose)',
+                  background: 'transparent', color: 'var(--rose)', cursor: 'pointer', fontSize: 12,
+                }}>Cancel</button>
               )}
             </div>
           ))}
@@ -98,25 +101,3 @@ export function TasksPage() {
     </div>
   );
 }
-
-const s: Record<string, React.CSSProperties> = {
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  title: { fontSize: 28, fontWeight: 700, color: '#f4f4f5', margin: 0 },
-  subtitle: { fontSize: 14, color: '#71717a', margin: '0 0 24px' },
-  controls: { display: 'flex', gap: 8, alignItems: 'center' },
-  select: { padding: '6px 12px', borderRadius: 6, border: '1px solid #27272a', background: '#18181b', color: '#a1a1aa', fontSize: 13 },
-  refreshBtn: { padding: '6px 10px', borderRadius: 6, border: '1px solid #27272a', background: 'transparent', cursor: 'pointer', fontSize: 14 },
-  loading: { color: '#71717a', padding: 32, textAlign: 'center' as const },
-  empty: { color: '#52525b', padding: 48, textAlign: 'center' as const, fontSize: 14 },
-  list: { borderRadius: 12, border: '1px solid #1e1e2e', overflow: 'hidden' },
-  taskRow: { display: 'flex', alignItems: 'flex-start', gap: 14, padding: '16px 20px', borderBottom: '1px solid #1e1e2e' },
-  taskDesc: { fontWeight: 500, fontSize: 14, color: '#e4e4e7' },
-  taskMeta: { fontSize: 12, color: '#52525b', marginTop: 4 },
-  progressBg: { height: 4, background: '#27272a', borderRadius: 2, marginTop: 8, overflow: 'hidden' },
-  progressFill: { height: '100%', background: '#3b82f6', borderRadius: 2, transition: 'width 0.3s' },
-  error: { fontSize: 12, color: '#ef4444', marginTop: 4 },
-  cancelBtn: {
-    padding: '4px 12px', borderRadius: 6, border: '1px solid #ef4444',
-    background: 'transparent', color: '#ef4444', cursor: 'pointer', fontSize: 12,
-  },
-};

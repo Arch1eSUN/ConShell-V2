@@ -324,15 +324,39 @@ describe('V7: EconomicSnapshot via REST handler', () => {
 // ── V8: REST handler output stability ────────────────────────────────
 
 describe('V8: REST economic endpoints exist', () => {
-  it('all 3 economic routes are registered', () => {
+  it('all Round 16.9 economic routes are registered (contract-based)', () => {
     const routes = createApiRoutes({});
     const economicRoutes = routes.filter(r => r.path.startsWith('/api/economic/'));
-    expect(economicRoutes).toHaveLength(3);
-    expect(economicRoutes.map(r => r.path).sort()).toEqual([
+    const paths = economicRoutes.map(r => r.path).sort();
+
+    // Contract: Round 16.9 established these canonical routes.
+    // Later rounds may add more; the test validates the foundation is intact.
+    const expectedCoreRoutes = [
       '/api/economic/agenda-factors',
+      '/api/economic/capabilities',
+      '/api/economic/claims',
+      '/api/economic/diagnostics',
+      '/api/economic/firewall',
+      '/api/economic/foundation',
       '/api/economic/gate',
+      '/api/economic/identity',
+      '/api/economic/mandates',
+      '/api/economic/payments/negotiations',
+      '/api/economic/payments/pending',
+      '/api/economic/payments/providers',
+      '/api/economic/payments/requirements',
+      '/api/economic/rewards',
+      '/api/economic/settlement/execute',
+      '/api/economic/settlement/pending',
+      '/api/economic/settlement/realize',
+      '/api/economic/settlement/verify',
       '/api/economic/snapshot',
-    ]);
+    ];
+    for (const route of expectedCoreRoutes) {
+      expect(paths).toContain(route);
+    }
+    // At minimum the 19 routes from Round 16.9 must exist
+    expect(economicRoutes.length).toBeGreaterThanOrEqual(expectedCoreRoutes.length);
   });
 
   it('gate handler returns error when services not configured', async () => {

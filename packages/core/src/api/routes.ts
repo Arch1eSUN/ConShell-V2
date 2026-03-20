@@ -127,6 +127,119 @@ export interface ApiServices {
   profitabilityEvaluator?: {
     evaluate(commitment: unknown, projection: unknown): { verdict: string; reason: string; commitmentId: string };
   };
+  /** Round 17.7 → 17.8: Economic Kernel Foundation control surface */
+  economicKernelFoundation?: {
+    identityRegistry: {
+      all(): ReadonlyArray<{ economicIdentityId: string; runtimeIdentityId: string; status: string; capabilityEnvelopeId: string; createdAt: string }>;
+      isEligibleForEconomicActions(runtimeId: string): boolean;
+    };
+    envelopeManager: {
+      getByEconomicIdentity(econId: string): { envelopeId: string; grantedScopes: ReadonlySet<string>; deniedScopes: ReadonlySet<string> } | undefined;
+    };
+    mandateEngine: {
+      getActiveMandates(econId: string): ReadonlyArray<{ mandateId: string; purpose: string; remainingBudget: number; validUntil: string; status: string }>;
+      all(): ReadonlyArray<{ mandateId: string; economicIdentityId: string; purpose: string; remainingBudget: number; status: string }>;
+    };
+    firewall: {
+      stats(): { totalEvaluated: number; approved: number; rejected: number; pendingHuman: number; blockedExternal: number };
+      recentBlocks(limit?: number): ReadonlyArray<{ candidateId: string; actionKind: string; finalDecision: string; rejectionReasons: readonly string[]; timestamp: string }>;
+      allVerdicts(): ReadonlyArray<{ candidateId: string; actionKind: string; finalDecision: string; rejectionReasons: readonly string[]; timestamp: string }>;
+    };
+    auditLog: {
+      getRecent(limit?: number): ReadonlyArray<{ eventId: string; actionClassification: string; firewallResult: string; createdAt: string }>;
+      stats(): { total: number; approved: number; rejected: number; pendingHuman: number };
+    };
+    /** Round 17.8: Truth report */
+    generateTruthReport(): {
+      firewallSummary: unknown;
+      mandateSummary: unknown;
+      warnings: unknown[];
+      derivedFacts: unknown[];
+      [key: string]: unknown;
+    };
+    /** Round 17.8: Reward registry */
+    rewardRegistry: {
+      all(): ReadonlyArray<{ rewardId: string; kind: string; name: string; status: string; amountCents: number; totalClaimed: number; maxTotalClaims: number }>;
+      getActive(): ReadonlyArray<{ rewardId: string; kind: string; name: string; status: string; amountCents: number }>;
+    };
+    /** Round 17.8: Claim engine */
+    claimEngine: {
+      getRecent(limit?: number): ReadonlyArray<{ claimId: string; rewardId: string; economicIdentityId: string; status: string; amountCents: number; createdAt: string }>;
+      allReceipts(): ReadonlyArray<{ receiptId: string; claimId: string; rewardId: string; amountCents: number; issuedAt: string }>;
+      stats(): { totalAttempts: number; approved: number; settled: number; rejected: number; ineligible: number; duplicate: number };
+    };
+    /** Round 17.9: Payment negotiation engine */
+    negotiationEngine: {
+      stats(): { totalNegotiations: number; allowed: number; rejected: number; pendingConfirmation: number; switchedProvider: number };
+      allRequirements(): ReadonlyArray<{ requirementId: string; resource: string; providerId: string; amountCents: number; pricingMode: string; expiresAt: string; riskLevel: string }>;
+      activeRequirements(): ReadonlyArray<{ requirementId: string; resource: string; providerId: string; amountCents: number }>;
+      getRecentResults(limit?: number): ReadonlyArray<{ negotiationId: string; decision: string; requirementId: string; timestamp: string }>;
+    };
+    /** Round 17.9: Provider selector */
+    providerSelector: {
+      all(): ReadonlyArray<{ providerId: string; name: string; trustScore: number; riskLevel: string }>;
+    };
+    /** Round 17.9: Payment preparation manager */
+    preparationManager: {
+      getPending(): ReadonlyArray<{ intentId: string; negotiationId: string; requirementId: string; status: string; createdAt: string }>;
+      getConfirmed(): ReadonlyArray<{ intentId: string; negotiationId: string; status: string; confirmedAt: string | null }>;
+      all(): ReadonlyArray<{ intentId: string; negotiationId: string; requirementId: string; status: string }>;
+    };
+    /** Round 17.9: Negotiation audit log */
+    negotiationAuditLog: {
+      getRecent(limit?: number): ReadonlyArray<{ eventId: string; negotiationId: string; eventType: string; timestamp: string }>;
+      summary(): { totalNegotiations: number; allowed: number; rejected: number; pendingConfirmation: number; switchedProvider: number; recentNegotiations: ReadonlyArray<{ negotiationId: string; decision: string; requirementId: string; timestamp: string }> };
+      providerSummary(): { totalComparisons: number; providerUsageDistribution: Record<string, number>; averageSavingsCents: number };
+    };
+    /** Round 18.0: Settlement execution */
+    settlementExecutionEngine: {
+      getPendingSettlements(): ReadonlyArray<{ settlementId: string; negotiationId: string; status: string; amountCents: number }>;
+      executeSettlement(proof: any, negotiation: any): { success: boolean; settlementId: string | null; reason: string | null };
+      verifySettlement(settlementId: string, outcome: any): { success: boolean; settlementId: string; finalStatus: string; reason: string | null };
+      getSettlement(settlementId: string): any;
+    };
+    revenueRealizationManager: {
+      realizeSettlement(record: any, splits: any[]): any;
+    };
+    canonicalLedgerAdopter: {
+      adoptRealization(realization: any): { success: boolean; realizationId: string; reason: string | null };
+    };
+    /** Round 18.1: Settlement governance layer */
+    governanceLayer: {
+      getExecutionSummary(): any;
+      getVerificationSummary(): any;
+      getByState(state: string): readonly any[];
+      allRecords(): readonly any[];
+    };
+    /** Round 18.1: Canonical settlement ledger */
+    settlementLedger: {
+      getLedgerSummary(): any;
+      allEntries(): readonly any[];
+      allPending(): readonly any[];
+      allFailed(): readonly any[];
+      queryByDirection(direction: string): readonly any[];
+    };
+    /** Round 18.1: Settlement feedback engine */
+    feedbackEngine: {
+      getGlobalProfitabilitySummary(): any;
+      getProviderRiskSignals(): readonly any[];
+      getSurvivalFeedback(): any;
+    };
+    /** Round 18.2: Settlement runtime orchestrator */
+    settlementRuntime: {
+      listFlows(filter?: any): readonly any[];
+      getFlowById(flowId: string): any;
+      getFlowTrace(flowId: string): any;
+      allFlowResults(): readonly any[];
+    };
+    /** Round 18.3: Settlement system coupling */
+    settlementCoupling: {
+      getSystemTruth(): any;
+      getRuntimeImpactSummary(): any;
+      getWritebackSummary(): any;
+      getAgendaInfluenceSummary(): any;
+    };
+  };
 }
 
 /**
@@ -472,6 +585,402 @@ export function createApiRoutes(services: ApiServices): ApiHandler[] {
         } : null,
         snapshot: idSvc.serialize(),
       };
+    },
+  });
+  // ── Round 17.7: Economic Kernel Foundation Control Surface ──────────
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/identity',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const all = ekf.identityRegistry.all();
+      return {
+        identities: all,
+        totalCount: all.length,
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/capabilities',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const identities = ekf.identityRegistry.all();
+      const envelopes = identities.map(id => ({
+        economicIdentityId: id.economicIdentityId,
+        envelope: ekf.envelopeManager.getByEconomicIdentity(id.economicIdentityId),
+      }));
+      return { envelopes };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/mandates',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const all = ekf.mandateEngine.all();
+      const active = all.filter((m: any) => m.status === 'active');
+      return {
+        activeMandates: active,
+        totalMandates: all.length,
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/firewall',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return {
+        stats: ekf.firewall.stats(),
+        recentBlocks: ekf.firewall.recentBlocks(10),
+        auditStats: ekf.auditLog.stats(),
+        recentAuditEvents: ekf.auditLog.getRecent(10),
+      };
+    },
+  });
+
+  // ── Round 17.8: Economic Truth Surface + Reward/Claim Routes ─────────
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/foundation',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return ekf.generateTruthReport();
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/rewards',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const all = ekf.rewardRegistry.all();
+      const active = ekf.rewardRegistry.getActive();
+      const claimStats = ekf.claimEngine.stats();
+      return {
+        rewards: all,
+        activeCount: active.length,
+        totalCount: all.length,
+        claimStats,
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/claims',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return {
+        recentClaims: ekf.claimEngine.getRecent(20),
+        receipts: ekf.claimEngine.allReceipts(),
+        stats: ekf.claimEngine.stats(),
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/diagnostics',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const report = ekf.generateTruthReport();
+      return {
+        firewallDiagnostics: report.firewallSummary,
+        mandateDiagnostics: report.mandateSummary,
+        warnings: report.warnings,
+        derivedFacts: report.derivedFacts,
+      };
+    },
+  });
+
+  // ── Round 17.9: Payment Negotiation + Provider Routes ───────────────
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/payments/requirements',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const all = ekf.negotiationEngine.allRequirements();
+      const active = ekf.negotiationEngine.activeRequirements();
+      return {
+        activeRequirements: active,
+        totalRequirements: all.length,
+        activeCount: active.length,
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/payments/negotiations',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const stats = ekf.negotiationEngine.stats();
+      const recent = ekf.negotiationEngine.getRecentResults(20);
+      const auditSummary = ekf.negotiationAuditLog.summary();
+      return {
+        stats,
+        recentNegotiations: recent,
+        auditSummary,
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/payments/pending',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const pending = ekf.preparationManager.getPending();
+      const confirmed = ekf.preparationManager.getConfirmed();
+      return {
+        pendingIntents: pending,
+        pendingCount: pending.length,
+        confirmedIntents: confirmed,
+        confirmedCount: confirmed.length,
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/payments/providers',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const providers = ekf.providerSelector.all();
+      const providerSummary = ekf.negotiationAuditLog.providerSummary();
+      return {
+        providers,
+        totalProviders: providers.length,
+        usageDistribution: providerSummary.providerUsageDistribution,
+        averageSavingsCents: providerSummary.averageSavingsCents,
+      };
+    },
+  });
+
+  // ── Round 18.0: Settlement & Revenue ────────────────────────────────
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/settlement/pending',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const pending = ekf.settlementExecutionEngine.getPendingSettlements();
+      return { pending, count: pending.length };
+    },
+  });
+
+  routes.push({
+    method: 'POST',
+    path: '/api/economic/settlement/execute',
+    handler: async (body?: unknown) => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const req = body as { proof: any; negotiation: any };
+      return ekf.settlementExecutionEngine.executeSettlement(req.proof, req.negotiation);
+    },
+  });
+
+  routes.push({
+    method: 'POST',
+    path: '/api/economic/settlement/verify',
+    handler: async (body?: unknown) => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const req = body as { settlementId: string; outcome: 'valid' | 'invalid' | 'timeout' };
+      return ekf.settlementExecutionEngine.verifySettlement(req.settlementId, req.outcome);
+    },
+  });
+
+  routes.push({
+    method: 'POST',
+    path: '/api/economic/settlement/realize',
+    handler: async (body?: unknown) => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const req = body as { settlementId: string; splits: any[] };
+      const settlement = ekf.settlementExecutionEngine.getSettlement(req.settlementId);
+      if (!settlement) return { error: 'Settlement not found' };
+      
+      const realization = ekf.revenueRealizationManager.realizeSettlement(settlement, req.splits);
+      return ekf.canonicalLedgerAdopter.adoptRealization(realization);
+    },
+  });
+
+  // ── Round 18.1: Truth Surface & Operator Diagnostics (G8) ───────────
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/settlements',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return {
+        executionSummary: ekf.governanceLayer.getExecutionSummary(),
+        allRecords: ekf.governanceLayer.allRecords(),
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/settlements/pending',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return {
+        awaitingConfirmation: ekf.governanceLayer.getByState('awaiting_human_confirmation'),
+        proofPending: ekf.governanceLayer.getByState('proof_pending'),
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/settlements/verification',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return ekf.governanceLayer.getVerificationSummary();
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/ledger',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return ekf.settlementLedger.getLedgerSummary();
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/revenue',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const summary = ekf.settlementLedger.getLedgerSummary();
+      return {
+        realized: summary.revenue,
+        pending: ekf.settlementLedger.allPending(),
+        failed: ekf.settlementLedger.allFailed(),
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/profitability',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return {
+        profitability: ekf.feedbackEngine.getGlobalProfitabilitySummary(),
+        providerRisk: ekf.feedbackEngine.getProviderRiskSignals(),
+        survivalFeedback: ekf.feedbackEngine.getSurvivalFeedback(),
+      };
+    },
+  });
+
+  // ── Round 18.2: Settlement Flow APIs ──────────────────────────────
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/settlement-flows',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return {
+        flows: ekf.settlementRuntime.listFlows(),
+        total: ekf.settlementRuntime.allFlowResults().length,
+      };
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/settlement-flows/:id',
+    handler: async (params: any) => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const result = ekf.settlementRuntime.getFlowById(params.id);
+      if (!result) return { error: `Flow ${params.id} not found` };
+      return result;
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/settlement-flows/:id/trace',
+    handler: async (params: any) => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      const trace = ekf.settlementRuntime.getFlowTrace(params.id);
+      if (!trace) return { error: `Flow trace for ${params.id} not found` };
+      return trace;
+    },
+  });
+
+  // ── Round 18.3: Economic Truth Surface APIs ───────────────────────
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/runtime-truth',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return ekf.settlementCoupling.getSystemTruth();
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/runtime-impact',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return ekf.settlementCoupling.getRuntimeImpactSummary();
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/settlement-writeback',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return ekf.settlementCoupling.getWritebackSummary();
+    },
+  });
+
+  routes.push({
+    method: 'GET',
+    path: '/api/economic/agenda-influence',
+    handler: async () => {
+      const ekf = services.economicKernelFoundation;
+      if (!ekf) return { error: 'EconomicKernelFoundation not configured' };
+      return ekf.settlementCoupling.getAgendaInfluenceSummary();
     },
   });
 

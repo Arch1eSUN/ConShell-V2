@@ -45,3 +45,8 @@ export {
   type MaterializedTask,
   type TaskResult,
 } from './commitment-materializer.js';
+
+// ── Agenda Posture Provider (Round 19.8) ──────────────────────────────
+export {
+  DefaultAgendaPostureProvider,
+} from './agenda-posture-provider.js';
