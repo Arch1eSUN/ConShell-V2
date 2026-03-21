@@ -22,14 +22,18 @@ export type CommitmentOrigin = 'creator' | 'self' | 'system' | 'external';
 export type CommitmentStatus =
   | 'planned'     // registered but not yet acted upon
   | 'active'      // currently being pursued
+  | 'scheduled'   // committed for a future time window (Round 20.3)
+  | 'deferred'    // postponed due to economic/governance/capacity reasons (Round 20.3)
+  | 'dormant'     // long-term hibernation, awaiting reactivation trigger (Round 20.3)
   | 'blocked'     // cannot proceed (dependency, resource, etc.)
+  | 'expired'     // time-to-live exceeded without completion (Round 20.3)
   | 'completed'   // successfully fulfilled
   | 'abandoned'   // intentionally dropped
   | 'failed';     // exhausted retries / unrecoverable
 
 /** Terminal statuses that should not be replayed on restart */
 export const TERMINAL_STATUSES: readonly CommitmentStatus[] = [
-  'completed', 'abandoned', 'failed',
+  'completed', 'abandoned', 'failed', 'expired',
 ];
 
 // ── Kind: what category of work does this commitment represent? ──────
@@ -53,6 +57,20 @@ export const PRIORITY_WEIGHTS: Record<CommitmentPriority, number> = {
   normal: 50,
   low: 25,
 };
+
+// ── Reactivation Policy (Round 20.3) ─────────────────────────────────
+
+/** Conditions under which a dormant/deferred commitment should be promoted */
+export interface ReactivationPolicy {
+  /** Trigger kind: what causes re-evaluation */
+  trigger: 'reserve_recovery' | 'runway_extension' | 'time_elapsed' | 'governance_release' | 'operator_action';
+  /** Optional: minimum reserve cents before reactivation */
+  minReserveCents?: number;
+  /** Optional: minimum runway days before reactivation */
+  minRunwayDays?: number;
+  /** Optional: ISO-8601 — re-evaluate after this time */
+  reevaluateAfter?: string;
+}
 
 // ── The Commitment interface ─────────────────────────────────────────
 
@@ -106,6 +124,18 @@ export interface Commitment {
   blockedReason?: string;
   failedReason?: string;
 
+  // ── Long-horizon lifecycle (Round 20.3) ──
+  /** Why this commitment is deferred */
+  deferredReason?: string;
+  /** Why this commitment entered dormant state */
+  dormantReason?: string;
+  /** ISO-8601 expiry time — after this, commitment auto-transitions to expired */
+  expiresAt?: string;
+  /** Reactivation policy: under what conditions should this commitment be promoted */
+  reactivationPolicy?: ReactivationPolicy;
+  /** ISO-8601 timestamp of the most recent state transition */
+  lastStateTransitionAt?: string;
+
   // ── Recovery tracking (Round 18.6) ──
   /** True if this commitment was active during a crash/restart and recovered */
   recoveredFromCrash?: boolean;
@@ -122,9 +152,13 @@ export interface Commitment {
 // ── Valid status transitions ─────────────────────────────────────────
 
 const VALID_TRANSITIONS: Record<CommitmentStatus, readonly CommitmentStatus[]> = {
-  planned:   ['active', 'abandoned'],
-  active:    ['blocked', 'completed', 'failed', 'abandoned'],
-  blocked:   ['active', 'abandoned', 'failed'],
+  planned:   ['active', 'scheduled', 'deferred', 'abandoned'],
+  active:    ['blocked', 'deferred', 'dormant', 'completed', 'failed', 'abandoned'],
+  scheduled: ['active', 'deferred', 'dormant', 'abandoned', 'expired'],
+  deferred:  ['active', 'scheduled', 'dormant', 'abandoned', 'expired'],
+  dormant:   ['active', 'deferred', 'abandoned', 'expired'],
+  blocked:   ['active', 'deferred', 'abandoned', 'failed'],
+  expired:   [],   // terminal
   completed: [],   // terminal
   abandoned: [],   // terminal
   failed:    [],   // terminal
@@ -178,6 +212,8 @@ export interface CreateCommitmentInput {
   revenueBearing?: boolean;
   taskType?: string;
   identityContext?: IdentityContext;
+  /** Round 20.6: Link to child session for delegation tracking */
+  delegateChildId?: string;
 }
 
 export function createCommitment(input: CreateCommitmentInput): Commitment {
@@ -202,6 +238,7 @@ export function createCommitment(input: CreateCommitmentInput): Commitment {
     blockedReason: undefined,
     failedReason: undefined,
     materializedTaskCount: 0,
+    delegateChildId: input.delegateChildId,
     createdAt: now,
     updatedAt: now,
   };

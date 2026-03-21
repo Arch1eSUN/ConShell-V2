@@ -1,8 +1,10 @@
 /**
- * LineageService — Round 16.5
+ * LineageService — Round 16.5 → 20.8
  *
  * Canonical owner of parent-child lineage lifecycle.
  * Orchestrates: MultiAgentManager (runtime) + InheritanceBoundary (identity) + FundingLease (economics)
+ *
+ * Round 20.8 G5: Auto-linkage injection + spawn linkage audit
  *
  * Architecture: GovernanceService → LineageService → MultiAgentManager
  */
@@ -22,8 +24,10 @@ import type {
   LineageStats,
   LineageFilter,
   RecallPolicy,
+  SpawnLinkageAudit,
 } from './lineage-contract.js';
 import { isValidChildTransition } from './lineage-contract.js';
+import type { CommitmentStore } from '../agenda/commitment-store.js';
 import { createDefaultScope } from './inheritance-scope.js';
 
 import type { Logger } from '../types/common.js';
@@ -43,6 +47,8 @@ export interface LineageServiceOptions {
   rootFingerprint?: string;
   /** Round 19.4: Governance bridge for lifecycle feedback */
   governanceBridge?: LineageGovernanceBridge;
+  /** Round 20.8 G5: Commitment store for auto-linkage injection */
+  commitmentStore?: CommitmentStore;
 }
 
 // ── LineageService ───────────────────────────────────────────────────
@@ -57,7 +63,10 @@ export class LineageService {
   private readonly economicService?: EconomicStateService;
   private readonly rootFingerprint: string;
   private governanceBridge?: LineageGovernanceBridge;
+  private readonly commitmentStore?: CommitmentStore;
   private idCounter = 0;
+  /** Round 20.8 G5: Spawn linkage audit trail */
+  private _spawnLinkageAudits: SpawnLinkageAudit[] = [];
 
   constructor(opts: LineageServiceOptions) {
     this.multiagent = opts.multiagent;
@@ -66,6 +75,7 @@ export class LineageService {
     this.economicService = opts.economicService;
     this.rootFingerprint = opts.rootFingerprint ?? 'root-genesis';
     this.governanceBridge = opts.governanceBridge;
+    this.commitmentStore = opts.commitmentStore;
   }
 
   /** Round 19.4: Set bridge after construction (for late-binding) */
@@ -90,6 +100,10 @@ export class LineageService {
         throw new Error(`Lineage viability gating failed: ${viability.reason}`);
       }
     }
+
+    // Round 20.8 G5: Resolve spawn linkage
+    const linkageAudit = this.resolveSpawnLinkage(spec);
+    this._spawnLinkageAudits.push(linkageAudit);
 
     // Build identity summary from inheritance manifest
     const identitySummary = this.buildIdentitySummary(spec);
@@ -116,6 +130,7 @@ export class LineageService {
       inheritanceScope: createDefaultScope(),
       proposalId: spec.proposalId,
       createdAt: new Date().toISOString(),
+      spawnLinkageAudit: linkageAudit,
     };
 
     this.records.set(recordId, record);
@@ -449,5 +464,58 @@ export class LineageService {
     };
     this.terminationLog.push(receipt);
     return receipt;
+  }
+
+  // ── Round 20.8 G5: Auto-Linkage ──────────────────────────────────
+
+  /**
+   * Resolve spawn commitment linkage.
+   * - If targetCommitmentId is provided, use explicit linkage.
+   * - If absent, try to auto-link by matching task to active commitments.
+   * - If no match, record as no_linkage (bypass audit).
+   */
+  private resolveSpawnLinkage(spec: ChildRuntimeSpec): SpawnLinkageAudit {
+    // Case 1: Explicit linkage provided
+    if (spec.targetCommitmentId) {
+      return {
+        resolution: 'explicit',
+        targetCommitmentId: spec.targetCommitmentId,
+        reason: `Explicit linkage to commitment ${spec.targetCommitmentId}`,
+      };
+    }
+
+    // Case 2: Try auto-link via commitment store
+    if (this.commitmentStore) {
+      const activeCommitments = this.commitmentStore.list({ status: ['active'] });
+      // Find a commitment whose taskType matches the spec task
+      const match = activeCommitments.find(c =>
+        c.taskType && spec.task.toLowerCase().includes(c.taskType.toLowerCase()),
+      );
+
+      if (match) {
+        // Inject the linkage back into the spec (mutate in-place for downstream consumers)
+        spec.targetCommitmentId = match.id;
+        this.logger.info('Auto-linked spawn to commitment', { commitmentId: match.id, task: spec.task });
+        return {
+          resolution: 'auto_linked',
+          targetCommitmentId: match.id,
+          reason: `Auto-linked to commitment '${match.name}' (taskType match)`,
+        };
+      }
+    }
+
+    // Case 3: No linkage possible — bypass audit
+    this.logger.warn('Spawn without commitment linkage', { task: spec.task, name: spec.name });
+    return {
+      resolution: 'no_linkage',
+      reason: this.commitmentStore
+        ? 'No active commitment matched task description'
+        : 'CommitmentStore not configured',
+    };
+  }
+
+  /** Round 20.8 G5: Get spawn linkage audit trail */
+  spawnLinkageAudits(): readonly SpawnLinkageAudit[] {
+    return [...this._spawnLinkageAudits];
   }
 }

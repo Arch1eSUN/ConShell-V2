@@ -216,6 +216,13 @@ export interface GovernanceReceipt {
     delegationScopeId?: string;
     /** Branch control receipt timestamp (Round 18.7) */
     branchControlReceiptId?: string;
+    /** Round 20.7: Whether routing enforcement was applied */
+    routingEnforced?: boolean;
+    /** Round 20.7: Routing denial reason (if rejected) */
+    routingDenied?: boolean;
+    routingReason?: string;
+    /** Round 20.7: Routing warnings */
+    routingWarnings?: string[];
   };
 }
 

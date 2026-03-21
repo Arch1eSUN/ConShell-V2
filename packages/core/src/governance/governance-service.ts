@@ -23,6 +23,7 @@ import type { PolicyEngine, PolicyContext, PolicyResult } from '../policy/index.
 import type { SelfModManager, ModificationRecord } from '../selfmod/index.js';
 import type { MultiAgentManager, SpawnRequest, ChildAgent } from '../multiagent/index.js';
 import type { LineageService, ChildRuntimeSpec } from '../lineage/index.js';
+import type { SpecializationRouter, RoutingEnforcementResult } from '../orchestration/specialization-router.js';
 import type { CollectiveService } from '../collective/index.js';
 import type { GovernedSelfModGate } from '../selfmod/governed-selfmod-gate.js';
 import type { SovereignIdentityStatus } from '../identity/sovereign-identity-contract.js';
@@ -57,6 +58,8 @@ import type { DelegationScope } from './delegation-scope.js';
 import { createDelegationScope } from './delegation-scope.js';
 import { DELEGATION_BLOCKED_STATUSES } from '../collective/collective-contract.js';
 import type { LineageBranchControl } from '../lineage/branch-control.js';
+import type { SpawnOutcome, SpawnProposalPayload } from './spawn-proposal-contract.js';
+import { createSpawnOutcome, extractSpawnPayload } from './spawn-proposal-contract.js';
 
 // Re-export contract types
 export type {
@@ -110,6 +113,8 @@ export interface GovernanceServiceOptions {
   economic?: GovernanceEconomicProvider;
   /** Round 19.3: GovernedSelfModGate for lifecycle control */
   selfModGate?: GovernedSelfModGate;
+  /** Round 20.7: SpecializationRouter for spawn enforcement */
+  specializationRouter?: SpecializationRouter;
   /** Logger */
   logger: Logger;
   /** Default actor origin */
@@ -124,6 +129,8 @@ export class GovernanceService {
   private verdicts = new Map<string, GovernanceVerdict>();
   /** Active delegation scopes by peerId (Round 17.2) */
   private activeDelegations = new Map<string, DelegationScope>();
+  /** Round 20.1: Spawn outcome tracking */
+  private spawnOutcomes = new Map<string, SpawnOutcome>();
   private identity: GovernanceIdentityProvider;
   private policy: GovernancePolicyProvider;
   private economic: GovernanceEconomicProvider;
@@ -133,6 +140,8 @@ export class GovernanceService {
   private collective?: CollectiveService;
   private branchControl?: LineageBranchControl;
   private selfModGate?: GovernedSelfModGate;
+  /** Round 20.7: SpecializationRouter for spawn enforcement */
+  private specializationRouter?: SpecializationRouter;
   private logger: Logger;
   private defaultOrigin: GovernanceActor['origin'];
   private idCounter = 0;
@@ -148,6 +157,7 @@ export class GovernanceService {
     this.collective = opts.collective;
     this.branchControl = opts.branchControl;
     this.selfModGate = opts.selfModGate;
+    this.specializationRouter = opts.specializationRouter;
     this.logger = opts.logger;
     this.defaultOrigin = opts.defaultOrigin ?? 'self';
   }
@@ -427,7 +437,27 @@ export class GovernanceService {
               fundingCents: proposal.expectedCostCents,
               parentId: proposal.payload?.['parentId'] as string ?? 'root',
               proposalId: proposal.id,
+              specialization: proposal.payload?.['specialization'] as string | undefined,
+              expectedCapabilities: proposal.payload?.['expectedCapabilities'] as string[] | undefined,
             };
+
+            // Round 20.7 G2: Enforce routing gate before spawn
+            if (this.specializationRouter) {
+              const manifest = {
+                role: 'worker' as const,
+                task: childSpec.task,
+                specialization: childSpec.specialization,
+                expectedCapabilities: childSpec.expectedCapabilities,
+              };
+              const enforcement = this.specializationRouter.enforceRouting(manifest);
+              if (!enforcement.allowed) {
+                relatedIds = { routingDenied: true, routingReason: enforcement.reason };
+                throw new Error(`Routing enforcement denied spawn: ${enforcement.reason}`);
+              }
+              // Attach enforcement audit to relatedIds
+              relatedIds = { routingEnforced: true, routingWarnings: enforcement.warnings };
+            }
+
             const record = await this.lineage.createChild(childSpec);
             relatedIds = { childId: record.childId, lineageRecordId: record.id };
             // Round 16.6: Auto-register as peer
@@ -765,6 +795,100 @@ export class GovernanceService {
   /** Round 17.0: Get all verdicts */
   allVerdicts(): readonly GovernanceVerdict[] {
     return Array.from(this.verdicts.values());
+  }
+
+  // ── Round 20.1: Spawn Outcome Tracking ───────────────────────────────
+
+  /**
+   * Update the outcome of a spawned child agent.
+   * Links the outcome back to the governance proposal for audit closure.
+   */
+  updateSpawnOutcome(proposalId: string, update: Partial<Pick<SpawnOutcome, 'status' | 'budgetUsedCents' | 'resultSummary' | 'errorDetails' | 'revenueGeneratedCents'>>): SpawnOutcome {
+    let outcome = this.spawnOutcomes.get(proposalId);
+    if (!outcome) {
+      // Auto-create from proposal if not yet tracked
+      const proposal = this.proposals.get(proposalId);
+      if (!proposal || proposal.actionKind !== 'replication') {
+        throw new Error(`No replication proposal found: ${proposalId}`);
+      }
+      const applyReceipt = this.receipts.find(
+        r => r.proposalId === proposalId && r.phase === 'apply' && r.result === 'success',
+      );
+      const childId = applyReceipt?.relatedIds?.childId ?? 'unknown';
+      outcome = createSpawnOutcome(proposalId, childId, proposal.expectedCostCents);
+      this.spawnOutcomes.set(proposalId, outcome);
+    }
+
+    if (update.status !== undefined) outcome.status = update.status;
+    if (update.budgetUsedCents !== undefined) outcome.budgetUsedCents = update.budgetUsedCents;
+    if (update.resultSummary !== undefined) outcome.resultSummary = update.resultSummary;
+    if (update.errorDetails !== undefined) outcome.errorDetails = update.errorDetails;
+    if (update.revenueGeneratedCents !== undefined) outcome.revenueGeneratedCents = update.revenueGeneratedCents;
+
+    // Mark completion timestamps
+    if (update.status === 'running' && !outcome.startedAt) {
+      outcome.startedAt = new Date().toISOString();
+    }
+    if (update.status === 'completed' || update.status === 'failed' || update.status === 'recalled') {
+      outcome.completedAt = new Date().toISOString();
+    }
+
+    this.logger.info('Spawn outcome updated', { proposalId, status: outcome.status });
+    return outcome;
+  }
+
+  /**
+   * Get spawn outcome for a proposal.
+   */
+  getSpawnOutcome(proposalId: string): SpawnOutcome | undefined {
+    return this.spawnOutcomes.get(proposalId);
+  }
+
+  /**
+   * List all spawn outcomes.
+   */
+  listSpawnOutcomes(filter?: { status?: SpawnOutcome['status'] }): SpawnOutcome[] {
+    let results = Array.from(this.spawnOutcomes.values());
+    if (filter?.status) results = results.filter(o => o.status === filter.status);
+    return results;
+  }
+
+  // ── Round 20.1: Proposal Lifecycle Extensions ───────────────────────
+
+  /**
+   * Defer a proposal — marks it as temporarily held for re-evaluation.
+   * Uses 'escalated' status with a defer reason recorded.
+   */
+  deferProposal(proposalId: string, reason: string): GovernanceProposal {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) throw new Error(`Proposal not found: ${proposalId}`);
+    if (proposal.status !== 'proposed' && proposal.status !== 'escalated') {
+      throw new Error(`Cannot defer proposal in status: ${proposal.status}`);
+    }
+
+    proposal.status = 'escalated';
+    proposal.denialReason = `DEFERRED: ${reason}`;
+    this.createReceipt(proposal, 'decision', 'success', `Deferred: ${reason}`);
+    this.logger.info('Proposal deferred', { proposalId, reason });
+    return proposal;
+  }
+
+  /**
+   * Expire a proposal — marks it as permanently timed out.
+   */
+  expireProposal(proposalId: string, reason?: string): GovernanceProposal {
+    const proposal = this.proposals.get(proposalId);
+    if (!proposal) throw new Error(`Proposal not found: ${proposalId}`);
+    if (proposal.status === 'denied' || proposal.status === 'verified' || proposal.status === 'rolled_back') {
+      throw new Error(`Cannot expire terminal proposal: ${proposal.status}`);
+    }
+
+    proposal.status = 'denied';
+    proposal.denialLayer = 'policy';
+    proposal.denialReason = `EXPIRED: ${reason ?? 'Proposal timed out'}`;
+    this.createReceipt(proposal, 'decision', 'failure', proposal.denialReason);
+    this.logger.info('Proposal expired', { proposalId });
+    return proposal;
   }
 
   /**

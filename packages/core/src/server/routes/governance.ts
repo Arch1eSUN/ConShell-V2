@@ -8,13 +8,19 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { HttpServer } from '../http.js';
 import type { GovernanceService } from '../../governance/governance-service.js';
 import type { Logger } from '../../types/common.js';
+import { GovernanceInbox } from '../../governance/governance-inbox.js';
+import type { CommitmentStore } from '../../agenda/commitment-store.js';
+import type { SessionRegistry } from '../../orchestration/session-registry.js';
 
 export function registerGovernanceRoutes(
   server: HttpServer,
   governance: GovernanceService,
   logger: Logger,
+  commitmentStore?: CommitmentStore,
+  sessionRegistry?: SessionRegistry,
 ): void {
   const log = logger.child('routes/governance');
+  const inbox = new GovernanceInbox(governance);
 
   // ── POST /api/governance/proposals — Create a new governance proposal ──
   server.post('/api/governance/proposals', async (_req: IncomingMessage, res: ServerResponse, body: string) => {
@@ -134,5 +140,119 @@ export function registerGovernanceRoutes(
     }
   });
 
-  log.info('Governance routes registered (7 endpoints)');
+  // ── Round 20.1: Spawn Proposal Routes ─────────────────────────────
+
+  // ── POST /api/governance/proposals/:id/defer — Defer a proposal ──
+  server.post('/api/governance/proposals/:id/defer', async (req: IncomingMessage, res: ServerResponse, body: string) => {
+    try {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const segments = url.pathname.split('/');
+      const id = segments[segments.length - 2]!;
+      const { reason } = JSON.parse(body || '{}');
+      const proposal = governance.deferProposal(id, reason ?? 'No reason given');
+      log.info('Proposal deferred', { id });
+      server.sendJson(res, 200, { proposal });
+    } catch (err) {
+      server.sendJson(res, 400, { error: String(err) });
+    }
+  });
+
+  // ── POST /api/governance/proposals/:id/expire — Expire a proposal ──
+  server.post('/api/governance/proposals/:id/expire', async (req: IncomingMessage, res: ServerResponse, body: string) => {
+    try {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const segments = url.pathname.split('/');
+      const id = segments[segments.length - 2]!;
+      const { reason } = JSON.parse(body || '{}');
+      const proposal = governance.expireProposal(id, reason);
+      log.info('Proposal expired', { id });
+      server.sendJson(res, 200, { proposal });
+    } catch (err) {
+      server.sendJson(res, 400, { error: String(err) });
+    }
+  });
+
+  // ── GET /api/governance/spawn-outcomes — List spawn outcomes ──
+  server.get('/api/governance/spawn-outcomes', async (req: IncomingMessage, res: ServerResponse, _body: string) => {
+    try {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const status = url.searchParams.get('status') ?? undefined;
+      const outcomes = governance.listSpawnOutcomes(status ? { status: status as any } : undefined);
+      server.sendJson(res, 200, { outcomes, count: outcomes.length });
+    } catch (err) {
+      server.sendJson(res, 500, { error: String(err) });
+    }
+  });
+
+  // ── GET /api/governance/inbox — Unified operator inbox ──
+  server.get('/api/governance/inbox', async (req: IncomingMessage, res: ServerResponse, _body: string) => {
+    try {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const category = url.searchParams.get('category') ?? undefined;
+      const result = inbox.getInbox(category ? { category: category as any } : undefined);
+      server.sendJson(res, 200, result);
+    } catch (err) {
+      server.sendJson(res, 500, { error: String(err) });
+    }
+  });
+
+  // ── POST /api/governance/proposals/:id/reject — Reject a proposal ──
+  server.post('/api/governance/proposals/:id/reject', async (req: IncomingMessage, res: ServerResponse, body: string) => {
+    try {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const segments = url.pathname.split('/');
+      const id = segments[segments.length - 2]!;
+      const { reason } = JSON.parse(body || '{}');
+      const proposal = governance.expireProposal(id, reason ?? 'Rejected by operator');
+      log.info('Proposal rejected', { id });
+      server.sendJson(res, 200, { proposal });
+    } catch (err) {
+      server.sendJson(res, 400, { error: String(err) });
+    }
+  });
+
+  // ── GET /api/governance/economic-truth — Economic organism dashboard ──
+  server.get('/api/governance/economic-truth', async (_req: IncomingMessage, res: ServerResponse) => {
+    try {
+      const inboxSummary = inbox.getInbox();
+      const proposals = governance.listProposals();
+      const spawnOutcomes = governance.listSpawnOutcomes?.() ?? [];
+
+      // Round 20.3: Agenda horizon data
+      const allCommitments = commitmentStore?.list() ?? [];
+      const statusCounts: Record<string, number> = {};
+      for (const c of allCommitments) {
+        statusCounts[c.status] = (statusCounts[c.status] ?? 0) + 1;
+      }
+      const now = new Date().toISOString();
+      const nextReviewable = commitmentStore?.nextReviewable(now) ?? [];
+
+      // Round 20.4: Child runtime truth
+      const childRuntime = sessionRegistry?.childRuntimeSummary() ?? null;
+
+      server.sendJson(res, 200, {
+        organism: {
+          inbox: inboxSummary,
+          governance: { totalProposals: proposals.length },
+          spawnOutcomes: spawnOutcomes.slice(-10),
+          agendaHorizon: {
+            totalCommitments: allCommitments.length,
+            statusCounts,
+            nextReEvaluations: nextReviewable.slice(0, 5).map(c => ({
+              id: c.id,
+              name: c.name,
+              nextReviewAt: c.nextReviewAt,
+              status: c.status,
+            })),
+          },
+          childRuntime,
+        },
+        generatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      server.sendJson(res, 500, { error: String(err) });
+    }
+  });
+
+  log.info('Governance routes registered (13 endpoints)');
 }

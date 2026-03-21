@@ -1,21 +1,14 @@
-# ConShell 全局大审计任务计划
+# Task Plan — Round 20.8 Prompt
 
-## 目标
-基于 Web4.ai 的标准，审计 ConShell 融合 Conway Automaton 与 OpenClaw 后的当前开发进度、最终目标、剩余工作、完成比例与已完成内容，形成结构化全局审计报告。
+## Goal
+基于 20.7 后全局大审计结果，写入 20.8 开发提示词，并把下一轮唯一主轴与建议 G1-G6 结构定稿。
 
-## 阶段
-- [complete] Phase 1: 收集项目目标与标准基线
-- [complete] Phase 2: 盘点已实现能力与模块边界
-- [complete] Phase 3: 对照 Web4.ai / Conway Automaton / OpenClaw 目标能力做差距分析
-- [complete] Phase 4: 评估项目完成度与百分比
-- [in_progress] Phase 5: 输出全局审计报告
-- [complete] Round 17.5: 形成详细审计报告
-- [complete] Round 17.6: 生成并写入 DevPrompt
+## Phases
+- [complete] Phase 1: 基于 20.7 全局审计收敛下一轮主轴
+- [complete] Phase 2: 确定 20.8 的任务分解与验收矩阵
+- [complete] Phase 3: 写入 20.8 开发提示词并同步工作面
 
-## 风险
-- Web4.ai 外部资料可能不完整或带宣传性，需要与仓内事实分离
-- 项目文档可能存在历史乐观表述，需要以代码/测试/路由/核心模块为准
-
-## 错误记录
-| 错误 | 尝试 | 处理 |
-|---|---:|---|
+## Key Questions
+1. 20.8 唯一主轴如何继续提速而不失真？
+2. intervention / governance / rollback / policy coupling / graph consequence 应如何收口进同一主轴？
+3. 如何避免把 topology / control 字段膨胀误判为 action closure 已完成？

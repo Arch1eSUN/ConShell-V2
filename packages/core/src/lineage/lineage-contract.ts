@@ -65,6 +65,12 @@ export interface ChildRuntimeSpec {
   inheritanceOverrides?: Record<string, 'inherit' | 'derive' | 'exclude'>;
   /** Additional config for the child */
   config?: Record<string, unknown>;
+  /** Round 20.7: Specialization tag for routing enforcement */
+  specialization?: string;
+  /** Round 20.7: Expected capabilities for routing enforcement */
+  expectedCapabilities?: string[];
+  /** Round 20.8 G5: Explicit commitment linkage (auto-linked if absent) */
+  targetCommitmentId?: string;
 }
 
 // ── Identity Summary ─────────────────────────────────────────────────
@@ -147,6 +153,17 @@ export interface LineageRecord {
   failedAt?: string;
   /** Reason for current terminal status */
   statusReason?: string;
+  /** Round 20.8 G5: Spawn linkage audit */
+  spawnLinkageAudit?: SpawnLinkageAudit;
+}
+
+/** Round 20.8 G5: Audit record for spawn commitment linkage */
+export type SpawnLinkageResolution = 'explicit' | 'auto_linked' | 'no_linkage';
+
+export interface SpawnLinkageAudit {
+  readonly resolution: SpawnLinkageResolution;
+  readonly targetCommitmentId?: string;
+  readonly reason: string;
 }
 
 // ── Receipts ─────────────────────────────────────────────────────────

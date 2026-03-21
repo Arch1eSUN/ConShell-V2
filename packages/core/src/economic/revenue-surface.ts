@@ -483,3 +483,94 @@ export class RevenueSurfaceRegistry {
     return result;
   }
 }
+
+// ── Round 20.2: Task Revenue Surface (G1 Canonicalization) ──────────
+
+export type TaskSettlementMode = 'prepaid' | 'post_completion' | 'milestone';
+
+export type TaskRevenueRiskLevel = 'low' | 'medium' | 'high';
+
+/**
+ * Extended revenue surface for task-based revenue.
+ * Adds cost estimation, margin, risk, and settlement semantics
+ * required by admission/scheduling/governance/accounting consumers.
+ */
+export interface TaskRevenueSurface extends RevenueSurface {
+  /** Estimated execution cost in cents */
+  readonly executionCostEstimateCents: number;
+  /** Computed margin = basePriceCents - executionCostEstimateCents */
+  readonly marginCents: number;
+  /** Risk level of fulfillment */
+  readonly riskLevel: TaskRevenueRiskLevel;
+  /** How settlement happens */
+  readonly settlementMode: TaskSettlementMode;
+  /** Expected time to ROI in milliseconds */
+  readonly expectedPayoffWindowMs: number;
+  /** Net utility estimate = expected revenue - expected cost */
+  readonly netUtilityCents: number;
+}
+
+/**
+ * Configuration for creating a TaskRevenueSurface.
+ */
+export interface TaskRevenueSurfaceConfig {
+  readonly id: string;
+  readonly name: string;
+  readonly basePriceCents: number;
+  readonly executionCostEstimateCents: number;
+  readonly riskLevel: TaskRevenueRiskLevel;
+  readonly settlementMode: TaskSettlementMode;
+  readonly expectedPayoffWindowMs: number;
+  readonly dynamicPricing?: boolean;
+  readonly survivalMultiplier?: boolean;
+}
+
+/**
+ * Factory: create a canonical task-based revenue surface.
+ */
+export function createTaskRevenueSurface(config: TaskRevenueSurfaceConfig): TaskRevenueSurface {
+  const marginCents = config.basePriceCents - config.executionCostEstimateCents;
+  return {
+    id: config.id,
+    type: 'task_service',
+    name: config.name,
+    pricePolicy: {
+      basePriceCents: config.basePriceCents,
+      dynamicPricing: config.dynamicPricing ?? true,
+      survivalMultiplier: config.survivalMultiplier ?? false,
+    },
+    isActive: true,
+    totalEarnedCents: 0,
+    transactionCount: 0,
+    executionCostEstimateCents: config.executionCostEstimateCents,
+    marginCents,
+    riskLevel: config.riskLevel,
+    settlementMode: config.settlementMode,
+    expectedPayoffWindowMs: config.expectedPayoffWindowMs,
+    netUtilityCents: marginCents,
+  };
+}
+
+/**
+ * Validator: returns error strings for invalid TaskRevenueSurface fields.
+ */
+export function validateTaskRevenueSurface(surface: TaskRevenueSurface): string[] {
+  const errors: string[] = [];
+
+  if (!surface.id) errors.push('id is required');
+  if (!surface.name) errors.push('name is required');
+  if (surface.pricePolicy.basePriceCents < 0) errors.push('basePriceCents must be non-negative');
+  if (surface.executionCostEstimateCents < 0) errors.push('executionCostEstimateCents must be non-negative');
+  if (!['low', 'medium', 'high'].includes(surface.riskLevel)) {
+    errors.push(`invalid riskLevel: ${surface.riskLevel}`);
+  }
+  if (!['prepaid', 'post_completion', 'milestone'].includes(surface.settlementMode)) {
+    errors.push(`invalid settlementMode: ${surface.settlementMode}`);
+  }
+  if (surface.expectedPayoffWindowMs <= 0) errors.push('expectedPayoffWindowMs must be positive');
+  if (surface.marginCents !== surface.pricePolicy.basePriceCents - surface.executionCostEstimateCents) {
+    errors.push('marginCents does not match basePriceCents - executionCostEstimateCents');
+  }
+
+  return errors;
+}

@@ -164,6 +164,28 @@ export class CommitmentStore {
     this.repo?.markStatus(id, 'abandoned');
   }
 
+  // ── Round 20.3: Long-horizon status shortcuts ───────────────────────
+
+  markDeferred(id: string, reason: string): void {
+    this.update(id, { status: 'deferred', deferredReason: reason, lastStateTransitionAt: new Date().toISOString() });
+    this.repo?.markStatus(id, 'deferred', reason);
+  }
+
+  markDormant(id: string, reason: string): void {
+    this.update(id, { status: 'dormant', dormantReason: reason, lastStateTransitionAt: new Date().toISOString() });
+    this.repo?.markStatus(id, 'dormant', reason);
+  }
+
+  markScheduled(id: string): void {
+    this.update(id, { status: 'scheduled', lastStateTransitionAt: new Date().toISOString() });
+    this.repo?.markStatus(id, 'scheduled');
+  }
+
+  markExpired(id: string): void {
+    this.update(id, { status: 'expired', lastStateTransitionAt: new Date().toISOString() });
+    this.repo?.markStatus(id, 'expired');
+  }
+
   // ── Queries ─────────────────────────────────────────────────────────
 
   /** Commitments whose dueAt <= now and still actionable */
