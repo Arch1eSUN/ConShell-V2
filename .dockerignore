@@ -1,0 +1,13 @@
+node_modules/
+.git/
+.github/
+tmp/
+audits/
+.DS_Store
+.env
+data/
+*.log
+**/dist/
+coverage/
+.vscode/
+.idea/

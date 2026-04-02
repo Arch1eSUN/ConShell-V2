@@ -1,0 +1,16 @@
+services:
+  conshell:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    image: conshell-v2:latest
+    container_name: conshell_agent
+    restart: unless-stopped
+    volumes:
+      - ./data:/root/.conshell
+    environment:
+      - CONSHELL_HOME=/root/.conshell
+    env_file:
+      - .env
+    ports:
+      - "4200:4200"
